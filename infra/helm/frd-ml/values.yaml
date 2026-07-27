@@ -1,0 +1,237 @@
+# ============================================================
+# FRD ML + GNN 默认配置
+# 依据：FRD-D10-V1.1 §3.2 / §1.3 / D03 §4.3-§4.4
+# ML 推理：2 副本（GPU，三模态并行 ADR-011）
+# GNN 服务：2 副本（CPU，GraphSAGE 团伙检测）
+# ============================================================
+
+nameOverride: ""
+fullnameOverride: ""
+namespace: frd-prod
+
+# ---------- 镜像 ----------
+image:
+  registry: registry.cn-hangzhou.aliyuncs.com
+  namespace: frd
+  mlRepository: frd-ml-serving
+  gnnRepository: frd-gnn-serving
+  tag: "1.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: aliyun-acr-secret
+
+# ---------- ML 推理 Deployment ----------
+ml:
+  replicaCount: 2   # 任务参数：ML 推理 replicas=2（GPU 节点）
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  container:
+    name: ml-serving
+    port: 8501   # ML 推理服务端口（对齐 ml/Dockerfile EXPOSE 8501）
+    command: ["uvicorn", "ml.scoring.main:app", "--host", "0.0.0.0", "--port", "8501"]
+    args: []
+
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8501
+      initialDelaySeconds: 30   # 模型加载较慢
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8501
+      initialDelaySeconds: 60
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+    startupProbe:
+      httpGet:
+        path: /health
+        port: 8501
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      failureThreshold: 60   # 模型加载最多 10min
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+
+  # GPU 资源（依据 D10 §3.2：8C16G + T4 GPU）
+  resources:
+    requests:
+      cpu: 4000m
+      memory: 8Gi
+      nvidia.com/gpu: 1
+    limits:
+      cpu: 8000m
+      memory: 16Gi
+      nvidia.com/gpu: 1
+
+  # GPU 节点选择器与容忍度
+  nodeSelector:
+    role: ml
+    nvidia.com/gpu: present
+
+  tolerations:
+    - key: nvidia.com/gpu
+      value: present
+      effect: NoSchedule
+
+  # ML 配置（依据 D03 §4.3 三模态并行 ADR-011）
+  config:
+    APP_ENV: "production"
+    MODEL_NAME: "frd-ml-v1.1"
+    # 三模态并行（ADR-011）
+    MODAL_PARALLEL: "true"
+    MODAL_TIMEOUT_MS: "30"
+    MODAL_FALLBACK_DEFAULT: "0.5"
+    # 融合权重
+    FUSION_WEIGHT_STRUCTURED: "0.6"
+    FUSION_WEIGHT_TEXT: "0.2"
+    FUSION_WEIGHT_BEHAVIOR: "0.2"
+    # 模型路径
+    MODEL_DIR: "/models"
+    # 漂移检测
+    DRIFT_PSI_THRESHOLD: "0.25"
+    # LLM Proxy（依据 D03 ADR-012 国内选型）
+    LLM_PROVIDER: "qwen"
+    LLM_MODEL: "qwen-max"
+    LLM_FALLBACK_PROVIDER: "deepseek"
+    LLM_FALLBACK_MODEL: "deepseek-v3"
+    # 监控
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.frd-monitoring.svc.cluster.local:4317"
+
+  secret:
+    enabled: true
+    data:
+      LLM_API_KEY: "CHANGE_ME"
+      LLM_FALLBACK_API_KEY: "CHANGE_ME"
+      MODEL_REGISTRY_TOKEN: "CHANGE_ME"
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: frd-ml-serving
+            topologyKey: kubernetes.io/hostname
+
+# ---------- GNN 服务 Deployment ----------
+gnn:
+  replicaCount: 2   # 任务参数：GNN replicas=2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  container:
+    name: gnn-serving
+    port: 8502   # GNN 服务端口（对齐 gnn/Dockerfile EXPOSE 8502）
+    command: ["uvicorn", "gnn.main:app", "--host", "0.0.0.0", "--port", "8502"]
+    args: []
+
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8502
+      initialDelaySeconds: 15
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8502
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+
+  # 资源（依据 D10 §3.2：4C8G CPU 节点）
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+
+  # GNN 节点选择器
+  nodeSelector:
+    role: gnn
+
+  tolerations: []
+
+  # GNN 配置（依据 D03 §4.4）
+  config:
+    APP_ENV: "production"
+    # Neo4j 连接
+    NEO4J_URI: "bolt://neo4j.frd-prod.svc.cluster.local:7687"
+    NEO4J_USER: "neo4j"
+    # GraphSAGE
+    EMBEDDING_DIM: "128"
+    K_HOPS: "3"
+    # 团伙检测
+    COMMUNITY_FRAUD_RATE_THRESHOLD: "0.30"
+    # 缓存
+    EMBEDDING_CACHE_TTL: "86400"
+    # 监控
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.frd-monitoring.svc.cluster.local:4317"
+
+  secret:
+    enabled: true
+    data:
+      NEO4J_PASSWORD: "CHANGE_ME"
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: frd-gnn-serving
+            topologyKey: kubernetes.io/hostname
+
+# ---------- 通用 ----------
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+dnsPolicy: ClusterFirst
+restartPolicy: Always
+terminationGracePeriodSeconds: 60

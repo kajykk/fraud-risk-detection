@@ -1,0 +1,115 @@
+{{/*
+FRD Backend Deployment
+依据：FRD-D10-V1.1 §6.3 Deployment 示例
+含：readinessProbe/livenessProbe（/api/v1/health）/ securityContext（runAsNonRoot）/ resources
+合并部署：API 网关 + 评分 + 规则 + 案件（依据 D10 §1.3）
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frd-backend.fullname" . }}
+  namespace: {{ include "frd-backend.namespace" . }}
+  labels:
+    {{- include "frd-backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.deployment.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "frd-backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "frd-backend.selectorLabels" . | nindent 8 }}
+        app: frd-backend
+      annotations:
+        # ConfigMap/Secret 变更时自动滚动更新
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "frd-backend.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: frd-backend-sa
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
+      restartPolicy: {{ .Values.restartPolicy }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ .Values.container.name }}
+          image: {{ include "frd-backend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.container.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.container.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.container.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "frd-backend.fullname" . }}-config
+            {{- if .Values.secret.enabled }}
+            - secretRef:
+                name: {{ include "frd-backend.fullname" . }}-secret
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          {{- with .Values.container.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.container.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.container.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.container.securityContext | nindent 12 }}
+          # 只读根文件系统需可写 tmpfs
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tmp
+              mountPath: /app/logs
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

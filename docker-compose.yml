@@ -1,0 +1,226 @@
+# ============================================================
+# FRD 金融反欺诈系统 - 本地开发环境
+# 使用：docker compose up -d
+# 停止：docker compose down
+# 清理数据：docker compose down -v
+# ============================================================
+
+services:
+  # ---------- PostgreSQL 15 + TimescaleDB ----------
+  postgres:
+    image: timescale/timescaledb:2.14.2-pg15
+    container_name: frd-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-frd}
+      POSTGRES_USER: ${POSTGRES_USER:-frd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frd_dev_password}
+      TS_TUNE_MEMORY: 2GB
+      TS_TUNE_NUM_CPUS: 4
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-frd} -d ${POSTGRES_DB:-frd}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - frd-net
+
+  # ---------- Redis 7 ----------
+  redis:
+    image: redis:7.4-alpine
+    container_name: frd-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - frd-net
+
+  # ---------- Neo4j 5 ----------
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: frd-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-frd_neo4j_password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_dbms_memory_pagecache_size: 512M
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - frd-net
+
+  # ---------- 后端 FastAPI ----------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: frd-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: local
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NEO4J_URI: bolt://neo4j:7687
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    command: >
+      sh -c "PYTHONPATH=/app alembic upgrade head &&
+             PYTHONPATH=/app uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    networks:
+      - frd-net
+
+  # ---------- Celery Worker ----------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: frd-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: local
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NEO4J_URI: bolt://neo4j:7687
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - backend
+      - redis
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    networks:
+      - frd-net
+
+  # ---------- Celery Beat (定时任务) ----------
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: frd-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: local
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - worker
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    networks:
+      - frd-net
+
+  # ---------- 前端 Vue 3.5 ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: frd-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:8002/api/v1
+    ports:
+      - "5174:5173"
+    volumes:
+      - ./frontend:/app
+    command: npm run dev -- --host 0.0.0.0
+    networks:
+      - frd-net
+
+  # ---------- 可观测性：Prometheus ----------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: frd-prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - frd-net
+
+  # ---------- 可观测性：Grafana ----------
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: frd-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - frd-net
+
+volumes:
+  postgres-data:
+  redis-data:
+  neo4j-data:
+  neo4j-logs:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  frd-net:
+    driver: bridge

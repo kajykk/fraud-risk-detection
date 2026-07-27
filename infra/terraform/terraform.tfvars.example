@@ -1,0 +1,61 @@
+# ============================================================
+# FRD Terraform 变量示例
+# 使用：cp terraform.tfvars.example terraform.tfvars 后填入真实值
+# 安全提示：terraform.tfvars 含敏感信息，禁止提交到 Git（已在 .gitignore 排除）
+# 生产推荐：密码类变量通过 RAM Role + KMS Secret Manager 注入
+# ============================================================
+
+# ---------- 通用 ----------
+region            = "cn-hangzhou"
+dr_region         = "cn-shanghai"
+environment       = "prod"
+project_name      = "frd"
+availability_zone = "cn-hangzhou-k"
+
+# ---------- 网络 ----------
+vpc_cidr              = "10.0.0.0/16"
+vswitch_private_cidr  = "10.0.1.0/24"
+vswitch_public_cidr   = "10.0.101.0/24"
+vswitch_db_cidr       = "10.0.201.0/24"
+
+# ---------- ACK ----------
+ack_cluster_name    = "frd-prod-ack"
+ack_cluster_version = "1.28"
+ack_node_password   = "REPLACE_WITH_STRONG_PASSWORD"   # 12+ 位，含大小写数字符号
+
+# ---------- RDS PostgreSQL ----------
+rds_instance_type  = "pg.n2.large.2c"   # 8C32G
+rds_engine_version = "15.0"
+rds_storage        = 500
+rds_username       = "frd_admin"
+rds_password       = "REPLACE_WITH_STRONG_PASSWORD"
+rds_db_name        = "frd_db"
+
+# ---------- Redis ----------
+redis_instance_type  = "redis.master.small.default"   # 4C16G
+redis_engine_version = "7.0"
+redis_password       = "REPLACE_WITH_STRONG_PASSWORD"
+
+# ---------- Neo4j（自建 ECS） ----------
+neo4j_instance_type = "ecs.g6.xlarge"   # 4C16G
+neo4j_storage       = 200
+neo4j_password      = "REPLACE_WITH_STRONG_PASSWORD"
+
+# ---------- OSS ----------
+oss_bucket_name    = "frd-prod-backup"
+oss_dr_bucket_name = "frd-prod-backup-dr"
+
+# ---------- KMS ----------
+kms_key_alias_data       = "frd-prod-data-encryption"
+kms_key_alias_jwt        = "frd-prod-jwt-signing"
+kms_key_alias_pii        = "frd-prod-pii-fernet"
+kms_key_alias_k8s_secret = "frd-prod-k8s-secret"
+
+# ---------- 标签 ----------
+tags = {
+  Project     = "fraud-risk-detection"
+  Environment = "prod"
+  Owner       = "kuang-zhenhua"
+  Compliance  = "PCI-DSS-v4.0|PIPL|等保2.0-三级"
+  ManagedBy   = "terraform"
+}

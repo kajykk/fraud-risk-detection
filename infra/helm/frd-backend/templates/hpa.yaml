@@ -1,0 +1,43 @@
+{{/*
+FRD Backend HPA
+依据：FRD-D10-V1.1 §6.4 HPA / 任务要求 min=6, max=24, CPU/内存/TPS 三指标
+生产配置通过 values-prod.yaml 启用
+*/}}
+{{- if .Values.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "frd-backend.fullname" . }}-hpa
+  namespace: {{ include "frd-backend.namespace" . }}
+  labels:
+    {{- include "frd-backend.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "frd-backend.fullname" . }}
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    {{- if .Values.hpa.metrics.cpu }}
+    - type: Resource
+      resource:
+        name: cpu
+        {{- toYaml .Values.hpa.metrics.cpu | nindent 8 }}
+    {{- end }}
+    {{- if .Values.hpa.metrics.memory }}
+    - type: Resource
+      resource:
+        name: memory
+        {{- toYaml .Values.hpa.metrics.memory | nindent 8 }}
+    {{- end }}
+    {{- if .Values.hpa.metrics.pods }}
+    - type: Pods
+      pods:
+        {{- toYaml .Values.hpa.metrics.pods | nindent 8 }}
+    {{- end }}
+  {{- with .Values.hpa.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

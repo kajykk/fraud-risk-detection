@@ -1,0 +1,28 @@
+# ============================================================
+# FRD ML + GNN 合并 Helm Chart
+# 依据：FRD-D10-V1.1 §6.2 / §1.3 / §3.2
+# ML 推理：2 副本（GPU 节点，8C16G + T4 GPU）
+# GNN 服务：2 副本（CPU 节点，4C8G）
+# 合并部署降低运维复杂度（依据 D10 §1.3）
+# ============================================================
+apiVersion: v2
+name: frd-ml
+description: FRD ML 推理 + GNN 服务合并 Chart（三模态并行 + GraphSAGE 团伙检测）
+type: application
+version: 1.1.0
+appVersion: 1.1.0
+keywords:
+  - fraud-detection
+  - ml-serving
+  - gnn
+  - pytorch
+  - gpu
+home: https://github.com/kuang-zhenhua/fraud-risk-detection
+sources:
+  - https://github.com/kuang-zhenhua/fraud-risk-detection
+maintainers:
+  - name: kuang-zhenhua
+    email: kuang@example.com
+annotations:
+  compliance: "PCI-DSS-v4.0|PIPL"
+  managedBy: "DevOps Agent"

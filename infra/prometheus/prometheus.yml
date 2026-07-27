@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    app: frd
+    env: local
+
+scrape_configs:
+  # FastAPI 后端（prometheus_fastapi_instrumentator）
+  - job_name: 'frd-backend'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:8000']
+        labels:
+          service: backend
+
+  # Celery Worker（celery-exporter）
+  - job_name: 'frd-worker'
+    static_configs:
+      - targets: ['worker:9808']
+        labels:
+          service: worker
+
+  # PostgreSQL（postgres-exporter，可选）
+  - job_name: 'frd-postgres'
+    static_configs:
+      - targets: ['postgres:9187']
+        labels:
+          service: postgres
+
+  # Redis（redis-exporter，可选）
+  - job_name: 'frd-redis'
+    static_configs:
+      - targets: ['redis:9121']
+        labels:
+          service: redis
+
+  # Prometheus 自身
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

@@ -1,0 +1,121 @@
+# ============================================================
+# FRD 安全扫描流水线
+# 依据：FRD-D10-V1.1 §10.1 AI Agent 自动 review
+# 触发：PR + 每周一 02:00 UTC 定时
+# 工具：Trivy（FS）/ Bandit（Python）/ Semgrep（多语言 SAST）/ dependency-check
+# ============================================================
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: "0 2 * * 1"   # 每周一 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ---------- Trivy 文件系统扫描 ----------
+  trivy-fs:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trivy FS scan
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  # ---------- Bandit Python SAST ----------
+  bandit:
+    name: Bandit Python SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Bandit
+        run: pip install bandit
+      - name: Run Bandit
+        run: |
+          bandit -r backend/app -f sarif -o bandit.sarif || true
+          # 高危阻断（severity HIGH，confidence HIGH）
+          bandit -r backend/app -lll -ii
+      - name: Upload Bandit SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+  # ---------- Semgrep 多语言 SAST ----------
+  semgrep:
+    name: Semgrep Multi-language SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/default
+            p/owasp-top-ten
+            p/python
+            p/typescript
+            p/docker
+            p/kubernetes
+          generateSarifReport: "1"
+      - name: Upload Semgrep SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # ---------- 依赖漏洞检查 ----------
+  dependency-check:
+    name: Dependency Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Python 依赖（pip-audit）
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: pip-audit (backend)
+        working-directory: backend
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --strict \
+            --vulnerability-service osv
+      # Node 依赖（npm audit）
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: npm audit (frontend)
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high

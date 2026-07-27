@@ -1,0 +1,123 @@
+{{/*
+FRD ML 推理 Deployment
+依据：FRD-D10-V1.1 §1.3 / §3.2 / D03 §4.3 三模态并行
+GPU 节点：2 副本，nvidia.com/gpu: 1
+三模态并行：structured(LightGBM) + text(BERT) + behavior(1D-CNN+IsolationForest)
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frd-ml.fullname" . }}-serving
+  namespace: {{ include "frd-ml.namespace" . }}
+  labels:
+    {{- include "frd-ml.labels" . | nindent 4 }}
+    app: frd-ml-serving
+spec:
+  replicas: {{ .Values.ml.replicaCount }}
+  strategy:
+    {{- toYaml .Values.ml.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "frd-ml.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app: frd-ml-serving
+  template:
+    metadata:
+      labels:
+        {{- include "frd-ml.selectorLabels" . | nindent 8 }}
+        app: frd-ml-serving
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8501"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.ml.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ml.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ml.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
+      restartPolicy: {{ .Values.restartPolicy }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ .Values.ml.container.name }}
+          image: {{ include "frd-ml.image-ml" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.ml.container.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http-ml
+              containerPort: {{ .Values.ml.container.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.ml.config }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $key, $value := .Values.ml.secret.data }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "frd-ml.fullname" $ }}-ml-secret
+                  key: {{ $key }}
+            {{- end }}
+          {{- with .Values.ml.container.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.ml.container.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.ml.container.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.ml.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.ml.container.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: model-cache
+              mountPath: /models
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+        - name: model-cache
+          emptyDir:
+            sizeLimit: 5Gi
+---
+{{/*
+ML Secret
+*/}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "frd-ml.fullname" . }}-ml-secret
+  namespace: {{ include "frd-ml.namespace" . }}
+  labels:
+    {{- include "frd-ml.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- range $key, $value := .Values.ml.secret.data }}
+  {{ $key }}: {{ $value | b64enc | quote }}
+  {{- end }}

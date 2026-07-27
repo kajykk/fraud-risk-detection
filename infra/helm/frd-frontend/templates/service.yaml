@@ -1,0 +1,22 @@
+{{/*
+FRD Frontend Service
+ClusterIP 80
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "frd-frontend.fullname" . }}
+  namespace: {{ include "frd-frontend.namespace" . }}
+  labels:
+    {{- include "frd-frontend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: {{ .Values.service.protocol }}
+      appProtocol: http
+  selector:
+    {{- include "frd-frontend.selectorLabels" . | nindent 4 }}
+    app: frd-frontend

@@ -1,0 +1,85 @@
+{{/*
+FRD Frontend Ingress（含 TLS）
+依据：FRD-D10-V1.1 §9.2 TLS 证书
+- 公网证书：阿里云数字证书管理服务（免费 DV 或付费 OV）
+- 内部服务：自签 CA + cert-manager 自动签发
+- TLS 版本：1.2+，禁用 SSLv3/TLSv1.0/1.1
+*/}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "frd-frontend.fullname" . }}
+  namespace: {{ include "frd-frontend.namespace" . }}
+  labels:
+    {{- include "frd-frontend.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "frd-frontend.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+---
+{{/*
+前端 nginx 反向代理 /api/* → frd-backend:8000
+通过独立 Ingress 暴露 API 路径
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "frd-frontend.fullname" . }}-api
+  namespace: {{ include "frd-frontend.namespace" . }}
+  labels:
+    {{- include "frd-frontend.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-connections: "50"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # TLS 1.2+ 强制（依据 D10 §9.2）
+    nginx.ingress.kubernetes.io/server-snippet: |
+      ssl_protocols TLSv1.2 TLSv1.3;
+      ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
+      ssl_prefer_server_ciphers on;
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.backend.serviceName }}
+                port:
+                  number: {{ $.Values.backend.servicePort }}
+    {{- end }}
+{{- end }}

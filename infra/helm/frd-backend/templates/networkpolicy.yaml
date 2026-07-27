@@ -1,0 +1,27 @@
+{{/*
+FRD Backend NetworkPolicy
+依据：FRD-D10-V1.1 §6.6 NetworkPolicy / 任务要求限制 ingress/egress
+生产强制启用，限制：
+  ingress: 仅 frd-ingress namespace 可访问 8000
+  egress: 仅允许 PG/Redis/Neo4j/DNS/HTTPS
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "frd-backend.fullname" . }}-netpol
+  namespace: {{ include "frd-backend.namespace" . }}
+  labels:
+    {{- include "frd-backend.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "frd-backend.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
+  egress:
+    {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
+{{- end }}

@@ -1,0 +1,25 @@
+# ============================================================
+# FRD Frontend Helm Chart
+# 依据：FRD-D10-V1.1 §6.2 / docker-compose.yml frontend
+# Vue 3.5 静态资源 + nginx 1.27-alpine
+# ============================================================
+apiVersion: v2
+name: frd-frontend
+description: FRD 前端服务（Vue 3.5 + nginx 静态资源）
+type: application
+version: 1.1.0
+appVersion: 1.1.0
+keywords:
+  - fraud-detection
+  - frontend
+  - vue
+  - nginx
+home: https://github.com/kuang-zhenhua/fraud-risk-detection
+sources:
+  - https://github.com/kuang-zhenhua/fraud-risk-detection
+maintainers:
+  - name: kuang-zhenhua
+    email: kuang@example.com
+annotations:
+  compliance: "PCI-DSS-v4.0|PIPL"
+  managedBy: "DevOps Agent"

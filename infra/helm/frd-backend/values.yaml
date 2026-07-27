@@ -1,0 +1,194 @@
+# ============================================================
+# FRD Backend 默认配置（开发/测试环境）
+# 依据：FRD-D10-V1.1 §6.3 Deployment / §6.4 HPA / §6.5 PDB / §6.6 NetworkPolicy
+# 默认 replicas=2（默认 2 / 生产 3，生产覆盖见 values-prod.yaml）
+# 生产覆盖配置见 values-prod.yaml
+# ============================================================
+
+# ---------- 全局 ----------
+nameOverride: ""
+fullnameOverride: ""
+namespace: frd-prod
+
+# ---------- 镜像 ----------
+image:
+  registry: registry.cn-hangzhou.aliyuncs.com
+  namespace: frd
+  repository: frd-backend
+  tag: "1.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: aliyun-acr-secret
+
+# ---------- Deployment ----------
+replicaCount: 2   # 默认 2，生产 3（见 values-prod.yaml）
+
+deployment:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+# ---------- 容器 ----------
+container:
+  name: backend
+  port: 8000
+  command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+  args: []
+
+  # 健康检查（依据 D10 §6.3）
+  readinessProbe:
+    httpGet:
+      path: /api/v1/health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  livenessProbe:
+    httpGet:
+      path: /api/v1/health
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  startupProbe:
+    httpGet:
+      path: /api/v1/health
+      port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30
+
+  # securityContext（依据 D10 §6.3 runAsNonRoot）
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# ---------- Pod ----------
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# ---------- 资源（依据 D10 §6.3：4C8G 节点 × 3 → 单 Pod 1C2G 限额） ----------
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+
+# ---------- Service ----------
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+  protocol: TCP
+
+# ---------- HPA（默认低规格，生产覆盖） ----------
+hpa:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    cpu:
+      target:
+        type: Utilization
+        averageUtilization: 70
+    memory:
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+# ---------- PDB ----------
+pdb:
+  enabled: false
+  minAvailable: 1
+
+# ---------- NetworkPolicy ----------
+networkPolicy:
+  enabled: false
+
+# ---------- 非敏感配置（ConfigMap） ----------
+config:
+  APP_ENV: "production"
+  APP_NAME: "fraud-risk-detection"
+  APP_VERSION: "1.1.0"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  # 业务参数
+  TENANT_CONTEXT_ENABLED: "true"
+  RLS_ENABLED: "true"
+  KILL_SWITCH_TIERED: "true"
+  # 评分主路径（依据 D03 §4.1）
+  SCORING_TIMEOUT_MS: "200"
+  MODAL_TIMEOUT_MS: "30"
+  MODAL_FALLBACK_DEFAULT: "0.5"
+  # 缓存
+  REDIS_TTL_SECONDS: "86400"
+  # Kafka
+  KAFKA_TOPIC_TRANSACTIONS: "transactions"
+  KAFKA_TOPIC_EVENTS: "events"
+  KAFKA_TOPIC_AUDIT_LOG: "audit_log"
+  # 依赖
+  POSTGRES_HOST: "postgresql.frd-prod.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "frd_db"
+  REDIS_HOST: "redis.frd-prod.svc.cluster.local"
+  REDIS_PORT: "6379"
+  NEO4J_URI: "bolt://neo4j.frd-prod.svc.cluster.local:7687"
+  # 监控
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.frd-monitoring.svc.cluster.local:4317"
+  OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
+  OTEL_TRACES_SAMPLER_ARG: "0.1"
+
+# ---------- 敏感配置（Secret，从外部 secrets 引用） ----------
+# 生产环境必须通过 ExternalSecrets + 阿里云 KMS Secret Manager 注入
+secret:
+  enabled: true
+  # ExternalSecret 引用名（生产）
+  externalSecretRef: "frd-backend-secret"
+  # 本地占位（仅 dev/test，生产禁用）
+  data:
+    POSTGRES_PASSWORD: "CHANGE_ME"
+    REDIS_PASSWORD: "CHANGE_ME"
+    NEO4J_PASSWORD: "CHANGE_ME"
+    JWT_SECRET_KEY: "CHANGE_ME"
+    PII_FERNET_KEY: "CHANGE_ME"
+    WEBHOOK_SIGNING_KEY: "CHANGE_ME"
+
+# ---------- 亲和性（单 AZ 部署，软反亲和） ----------
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: frd-backend
+          topologyKey: kubernetes.io/hostname
+
+# ---------- 节点选择器 ----------
+nodeSelector: {}
+
+# ---------- 容忍度 ----------
+tolerations: []
+
+# ---------- Pod DNS ----------
+dnsPolicy: ClusterFirst
+restartPolicy: Always
+terminationGracePeriodSeconds: 60

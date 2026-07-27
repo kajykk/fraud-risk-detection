@@ -1,0 +1,172 @@
+# ============================================================
+# FRD Staging 部署流水线
+# 依据：FRD-D10-V1.1 §10 GitOps / §13 灰度发布
+# 触发：push 到 main
+# 流程：同步镜像 → ArgoCD 同步 Helm Chart → 灰度检查（24h）
+# 灰度策略：5%(24h) → 25%(24h) → 100%(72h)
+# ============================================================
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  NAMESPACE: frd
+
+jobs:
+  # ---------- 同步镜像到 staging ----------
+  sync-images:
+    name: Sync Images to Staging
+    runs-on: ubuntu-latest
+    if: github.event.head_commit.message != 'ci: skip staging deploy'
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve latest tag
+        id: meta
+        run: |
+          # 获取最近发布的 tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No release tag found, using commit SHA"
+            VERSION=$(echo "${{ github.sha }}" | cut -c1-7)
+          else
+            VERSION="${LATEST_TAG#v}"
+          fi
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Sync 5 images to staging tag
+        run: |
+          IMAGES=(frd-backend frd-worker frd-frontend frd-ml-serving frd-gnn-serving)
+          SRC_TAG="${{ steps.meta.outputs.image_tag }}"
+          DST_TAG="staging-${{ steps.meta.outputs.version }}"
+          for img in "${IMAGES[@]}"; do
+            SRC="${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${img}:${SRC_TAG}"
+            DST="${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${img}:${DST_TAG}"
+            echo "Syncing $SRC -> $DST"
+            docker pull "$SRC"
+            docker tag "$SRC" "$DST"
+            docker push "$DST"
+          done
+
+  # ---------- 更新 GitOps 仓库并触发 ArgoCD 同步 ----------
+  argocd-sync:
+    name: ArgoCD Sync Helm Chart
+    runs-on: ubuntu-latest
+    needs: sync-images
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.ACK_STAGING_KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Update Helm values for staging
+        run: |
+          VERSION="${{ needs.sync-images.outputs.version }}"
+          # 更新各 chart 的 image.tag 为 staging 版本
+          for chart in frd-backend frd-frontend frd-ml; do
+            yq -i ".image.tag = \"staging-${VERSION}\"" \
+              "infra/helm/${chart}/values.yaml" || true
+          done
+
+      - name: ArgoCD app sync (staging)
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: |
+          argocd app sync frd-staging \
+            --server "$ARGOCD_SERVER" \
+            --auth-token "$ARGOCD_AUTH_TOKEN" \
+            --prune \
+            --timeout 300
+          argocd app wait frd-staging \
+            --server "$ARGOCD_SERVER" \
+            --auth-token "$ARGOCD_AUTH_TOKEN" \
+            --health \
+            --timeout 600
+
+  # ---------- 灰度检查（24h） ----------
+  canary-check:
+    name: Canary Health Check (24h)
+    runs-on: ubuntu-latest
+    needs: argocd-sync
+    timeout-minutes: 1500   # 25h 留余量
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.ACK_STAGING_KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Canary 5% rollout (Stage 1, 24h observation)
+        run: |
+          # Stage 1: 5% 流量，持续 24h
+          kubectl argo rollouts set-weight frd-backend -n frd-staging 5 || true
+          kubectl argo rollouts set-weight frd-frontend -n frd-staging 5 || true
+
+      - name: Wait 24h and observe metrics
+        run: |
+          echo "Observing 5% canary traffic for 24h (依据 D10 §13.1)"
+          sleep 86400   # 24h
+
+      - name: Check canary health metrics
+        run: |
+          # 依据 D10 §13.3 灰度判定指标
+          # - 错误率 < 0.5% (5min)
+          # - P99 延迟 < 200ms (5min)
+          # - 业务成功率 > 99% (5min)
+          # 任一指标超阈值触发自动回滚
+          kubectl argo rollouts status frd-backend -n frd-staging --timeout 300s
+
+      - name: Promote to 25% (Stage 2)
+        if: success()
+        run: |
+          echo "Stage 1 metrics PASS, promoting to 25% (Stage 2)"
+          kubectl argo rollouts set-weight frd-backend -n frd-staging 25 || true
+          kubectl argo rollouts set-weight frd-frontend -n frd-staging 25 || true
+
+      - name: Auto-rollback on failure
+        if: failure()
+        run: |
+          echo "!! Canary check FAILED, triggering rollback"
+          kubectl argo rollouts abort frd-backend -n frd-staging || true
+          kubectl argo rollouts undo frd-backend -n frd-staging || true
+          # 通知干系人
+          echo "::warning::Staging canary rolled back, manual review required"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Staging Canary Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: ${{ needs.sync-images.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Stage 1 (5%, 24h): ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Next: promote to 25% Stage 2 (24h) then 100% (72h)" >> "$GITHUB_STEP_SUMMARY"

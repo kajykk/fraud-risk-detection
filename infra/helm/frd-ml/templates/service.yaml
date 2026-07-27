@@ -1,0 +1,55 @@
+{{/*
+FRD ML + GNN Services
+依据：FRD-D10-V1.1 §6.3 Service
+- ML 推理：ClusterIP 8501
+- GNN 服务：ClusterIP 8502
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "frd-ml.fullname" . }}-serving
+  namespace: {{ include "frd-ml.namespace" . }}
+  labels:
+    {{- include "frd-ml.labels" . | nindent 4 }}
+    app: frd-ml-serving
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8501"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-ml
+      port: 8501
+      targetPort: 8501
+      protocol: TCP
+      appProtocol: http
+  selector:
+    app.kubernetes.io/name: {{ include "frd-ml.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app: frd-ml-serving
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "frd-ml.fullname" . }}-gnn
+  namespace: {{ include "frd-ml.namespace" . }}
+  labels:
+    {{- include "frd-ml.labels" . | nindent 4 }}
+    app: frd-gnn-serving
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8502"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-gnn
+      port: 8502
+      targetPort: 8502
+      protocol: TCP
+      appProtocol: http
+  selector:
+    app.kubernetes.io/name: {{ include "frd-ml.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app: frd-gnn-serving

@@ -1,0 +1,113 @@
+{{/*
+FRD GNN 服务 Deployment
+依据：FRD-D10-V1.1 §1.3 / §3.2 / D03 §4.4 GNN 团伙检测
+CPU 节点：2 副本，GraphSAGE + Cypher 查询
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frd-ml.fullname" . }}-gnn
+  namespace: {{ include "frd-ml.namespace" . }}
+  labels:
+    {{- include "frd-ml.labels" . | nindent 4 }}
+    app: frd-gnn-serving
+spec:
+  replicas: {{ .Values.gnn.replicaCount }}
+  strategy:
+    {{- toYaml .Values.gnn.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "frd-ml.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app: frd-gnn-serving
+  template:
+    metadata:
+      labels:
+        {{- include "frd-ml.selectorLabels" . | nindent 8 }}
+        app: frd-gnn-serving
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8502"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.gnn.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gnn.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gnn.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsPolicy: {{ .Values.dnsPolicy }}
+      restartPolicy: {{ .Values.restartPolicy }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: {{ .Values.gnn.container.name }}
+          image: {{ include "frd-ml.image-gnn" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.gnn.container.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http-gnn
+              containerPort: {{ .Values.gnn.container.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.gnn.config }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $key, $value := .Values.gnn.secret.data }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "frd-ml.fullname" $ }}-gnn-secret
+                  key: {{ $key }}
+            {{- end }}
+          {{- with .Values.gnn.container.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.gnn.container.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.gnn.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.gnn.container.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+---
+{{/*
+GNN Secret
+*/}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "frd-ml.fullname" . }}-gnn-secret
+  namespace: {{ include "frd-ml.namespace" . }}
+  labels:
+    {{- include "frd-ml.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- range $key, $value := .Values.gnn.secret.data }}
+  {{ $key }}: {{ $value | b64enc | quote }}
+  {{- end }}

@@ -1,0 +1,94 @@
+/* FRD 金融反欺诈系统 全局样式 */
+
+:root {
+  --frd-primary: #0b5fff;
+  --frd-success: #67c23a;
+  --frd-warning: #e6a23c;
+  --frd-danger: #f56c6c;
+  --frd-info: #909399;
+  --frd-bg: #f5f7fa;
+  --frd-sidebar-width: 220px;
+  --frd-sidebar-collapsed-width: 64px;
+  --frd-header-height: 56px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', Arial, sans-serif;
+  font-size: 14px;
+  color: #303133;
+  background-color: var(--frd-bg);
+}
+
+a {
+  color: var(--frd-primary);
+  text-decoration: none;
+}
+
+/* 决策风险着色（对齐 D06 §5.2） */
+.frd-decision-allow {
+  color: var(--frd-success);
+}
+.frd-decision-review {
+  color: var(--frd-warning);
+}
+.frd-decision-deny {
+  color: var(--frd-danger);
+}
+.frd-decision-challenge {
+  color: var(--frd-info);
+}
+
+/* 风险等级着色（对齐 baseline §3.5） */
+.frd-risk-low {
+  color: var(--frd-success);
+}
+.frd-risk-medium {
+  color: var(--frd-warning);
+}
+.frd-risk-high {
+  color: var(--frd-danger);
+}
+.frd-risk-critical {
+  color: #ad0606;
+  font-weight: 600;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #c0c4cc;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #909399;
+}
+
+/* 通用页面容器 */
+.frd-page-container {
+  padding: 16px;
+}
+.frd-card-margin {
+  margin-bottom: 16px;
+}
+.frd-flex {
+  display: flex;
+}
+.frd-flex-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}

@@ -1,0 +1,2 @@
+# FRD 前端 PWA 资源源文件占位
+# 实际部署时用 @vite-pwa/assets-generator 生成 pwa-192x192.png / pwa-512x512.png / favicon.ico
