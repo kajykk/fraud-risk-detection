@@ -288,7 +288,7 @@ Phase 6: 最终验收与移交
 | GET /transactions/{id} | < 30ms | < 100ms | < 150ms | 5000 | Locust 压测 |
 | POST /rules | < 100ms | < 300ms | < 500ms | 50 | Locust 压测 |
 | GET /cases | < 50ms | < 200ms | < 500ms | 1000 | Locust 压测 |
-| POST /graph/detect | < 200ms | < 500ms | < 1000ms | 100 | Locust 压测 |
+| POST /api/v1/gnn/community-detection | < 200ms | < 500ms | < 1000ms | 100 | Locust 压测 |
 
 ### 6.2 系统性能
 

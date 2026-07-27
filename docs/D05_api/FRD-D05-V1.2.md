@@ -245,7 +245,7 @@ Retry-After: 1
   "data": {
     "access_token": "eyJhbGciOi...",
     "token_type": "Bearer",
-    "expires_in": 3600,
+    "expires_in": 1800,
     "scope": "transaction:score rule:read case:read"
   }
 }

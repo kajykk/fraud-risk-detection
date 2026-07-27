@@ -1359,15 +1359,15 @@ FRD 是面向持牌金融机构 + 大型商户的实时反欺诈 SaaS 平台，�
 | 需求 ID | 设计章节 | 代码模块 | 测试用例 ID |
 |---|---|---|---|
 | FR-AUTH-001 | SAD-3.2.1 | app/api/v1/auth.py | TC-AUTH-001~005 |
-| FR-AUTH-004 | SAD-3.2.4 | app/core/tenant.py | TC-AUTH-010~015 |
-| FR-SCORE-001 | SAD-3.4.1 | app/api/v1/score.py | TC-SCORE-010~020 |
-| FR-RULE-001 | SAD-3.5.1 | app/core/rule_engine.py | TC-RULE-030~035 |
-| FR-GNN-002 | SAD-3.6.2 | app/gnn/graph_query.py | TC-GNN-040~045 |
-| FR-MODEL-005 | SAD-3.7.3 | app/core/kill_switch.py | TC-MODEL-050~052 |
-| FR-AML-002 | SAD-3.8.1 | app/services/aml_service.py | TC-AML-060~065 |
-| FR-PIPL-001 | SAD-3.9.1 | app/api/v1/privacy.py | TC-PIPL-070~075 |
-| FR-LIST-001 | SAD-3.10.1 | app/services/list_service.py | TC-LIST-080~085 |
-| FR-BILLING-001 | SAD-3.11.1 | app/services/billing.py | TC-BILLING-090~095 |
+| FR-AUTH-004 | SAD-3.2.4 | app/middleware/tenant.py | TC-AUTH-010~015 |
+| FR-SCORE-001 | SAD-3.4.1 | app/api/v1/scores.py | TC-SCORE-010~020 |
+| FR-RULE-001 | SAD-3.5.1 | app/services/rule_engine.py | TC-RULE-030~035 |
+| FR-GNN-002 | SAD-3.6.2 | app/api/v1/gnn.py | TC-GNN-040~045 |
+| FR-MODEL-005 | SAD-3.7.3 | app/services/kill_switch.py | TC-MODEL-050~052 |
+| FR-AML-002 | SAD-3.8.1 | ⏳ 未实现 | TC-AML-060~065 |
+| FR-PIPL-001 | SAD-3.9.1 | app/api/v1/pipl.py | TC-PIPL-070~075 |
+| FR-LIST-001 | SAD-3.10.1 | ⏳ 未实现 | TC-LIST-080~085 |
+| FR-BILLING-001 | SAD-3.11.1 | ⏳ 未实现 | TC-BILLING-090~095 |
 
 ---
 

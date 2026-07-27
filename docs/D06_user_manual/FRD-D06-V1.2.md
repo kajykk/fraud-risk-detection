@@ -452,7 +452,7 @@ device_age_sec < 600
 1. 规则详情页点击"下线"
 2. 选择下线原因
 3. 二次确认
-4. 规则进入 DISABLED 状态
+4. 规则进入 RETIRED 状态
 5. 30 天后自动归档
 
 ---
@@ -705,7 +705,7 @@ BERT 文本模型 → TF-IDF/LR → 启发式规则 → 纯规则引擎
 
 PIPL 个人信息保护要求（依据 FRD-BASELINE-V1.1 §7.1，端点对齐 D05 V1.1 §13 `/api/v1/pipl/*`）：
 
-1. **数据导出请求**：用户可申请导出个人数据（`POST /pipl/data-export`，`GET /pipl/data-export/{task_id}/status` 查询状态）
+1. **数据导出请求**：用户可申请导出个人数据（`GET /pipl/data-export`，`GET /pipl/data-export/{task_id}/status` 查询状态）
 2. **数据删除请求**：用户可申请删除个人数据（保留法律要求的最小集）（`POST /pipl/deletion`，`GET /pipl/deletion/{request_id}/status` 查询状态）
 3. **同意管理**：查询/授予/撤回同意（`GET /pipl/consent`、`POST /pipl/consent`）
 4. **数据使用审计**：可查询个人数据被访问的记录
@@ -1027,7 +1027,7 @@ PIPL 个人信息保护要求（依据 FRD-BASELINE-V1.1 §7.1，端点对齐 D0
 #### 13.5.4 投递失败重试
 
 - 投递失败（非 2xx 或超时）自动重试，最多 5 次
-- 重试间隔：1min / 5min / 30min / 2h / 6h（指数退避）
+- 重试间隔：即时 / 1m / 5m / 30m / 2h / 12h（对齐 D05 §11.10 与代码 webhook.py）
 - 连续失败 5 次后 Webhook 自动禁用，邮件通知商户
 - 投递日志保留 30 天，可在"投递日志"页查询
 
@@ -1231,7 +1231,7 @@ PIPL 个人信息保护要求（依据 FRD-BASELINE-V1.1 §7.1，端点对齐 D0
 风控经理负责规则从创建到全量发布的审批把关，工作流如下：
 
 ```
-DRAFT（创建） → REVIEW（评审） → CANARY（灰度） → ACTIVE（全量）
+DRAFT（创建） → [评审] → CANARY（灰度） → ACTIVE（全量）
 ```
 
 #### 14.3.1 评审阶段
@@ -1434,7 +1434,7 @@ A: 风控经理在"案件 → 未分配"页勾选多案件，点击"批量分配
 A: 在"交易查询"页找到被拦截交易，点击"申诉"，填写申诉理由与类型，上传补充材料后提交。标准处理时限 3 工作日，紧急申诉 24h（需 TENANT_ADMIN 审批）。申诉状态可在"我的申诉"页跟踪。
 
 **Q11: Webhook 投递失败怎么办？**
-A: 系统会自动重试 5 次（指数退避：1min/5min/30min/2h/6h）。连续失败 5 次后 Webhook 自动禁用并邮件通知。排查步骤：(1) 在"投递日志"页查看失败原因（超时/非 2xx/连接拒绝）；(2) 检查回调 URL 是否可公网访问且为 HTTPS；(3) 检查服务端是否正确返回 2xx；(4) 修复后重新启用 Webhook 并点击"测试"验证。
+A: 系统会自动重试 5 次（指数退避：即时/1m/5m/30m/2h/12h）。连续失败 5 次后 Webhook 自动禁用并邮件通知。排查步骤：(1) 在"投递日志"页查看失败原因（超时/非 2xx/连接拒绝）；(2) 检查回调 URL 是否可公网访问且为 HTTPS；(3) 检查服务端是否正确返回 2xx；(4) 修复后重新启用 Webhook 并点击"测试"验证。
 
 **Q12: API 限流如何提升？**
 A: 默认按租户套餐限流（STANDARD/PRO/ENTERPRISE）。如频繁返回 429，可：(1) 优化调用方批量逻辑，减少 QPS；(2) 联系 TENANT_ADMIN 升级套餐；(3) 错峰调用。限流响应头 `X-RateLimit-Remaining` 显示剩余配额。
@@ -1460,10 +1460,10 @@ A: 案件详情页点击"上报反洗钱"，选择上报类型（STR 可疑交�
 A: 不能。审计日志不可篡改、不可删除，保留 7 年（满足反洗钱法要求）。
 
 **Q19: 如何申请数据导出？**
-A: 联系 COMPLIANCE_OFFICER，提交数据主体请求。系统提供 PIPL 接口：`POST /pipl/data-export` 申请导出，`GET /pipl/data-export/{task_id}/status` 查询状态，系统将在 30 天内响应。
+A: 联系 COMPLIANCE_OFFICER，提交数据主体请求。系统提供 PIPL 接口：`GET /pipl/data-export` 申请导出，`GET /pipl/data-export/{task_id}/status` 查询状态，系统将在 30 天内响应。
 
 **Q20: 如何配合 PIPL 数据导出？**
-A: 数据主体（或其授权人）通过 `POST /pipl/data-export` 提交导出申请。COMPLIANCE_OFFICER 在"PIPL 合规 → 数据主体请求"页审核身份后触发导出。系统汇总该数据主体的所有个人数据（交易、评分、案件、审计记录等），生成加密包供下载，30 天内响应。导出操作全程记录审计日志。
+A: 数据主体（或其授权人）通过 `GET /pipl/data-export` 提交导出申请。COMPLIANCE_OFFICER 在"PIPL 合规 → 数据主体请求"页审核身份后触发导出。系统汇总该数据主体的所有个人数据（交易、评分、案件、审计记录等），生成加密包供下载，30 天内响应。导出操作全程记录审计日志。
 
 **Q21: PCI-DSS 评估如何配合？**
 A: 依据 FRD-BASELINE-V1.1 §2.3，PCI-DSS v4.0 由 QSA 季度评估。配合步骤：(1) COMPLIANCE_OFFICER 在"审计 → PCI-DSS"页导出 RoC 报告编号与日期作为验收证据；(2) 提供 CDE（持卡人数据环境）边界图与网络隔离配置；(3) 提供 Tokenization 实施证明（无明文 PAN 存储）；(4) 配合 QSA 现场抽查审计日志与访问控制；(5) 整改项在限期内完成。
