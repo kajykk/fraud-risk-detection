@@ -196,6 +196,8 @@ Retry-After: 1
 
 ### 2.8 WebSocket 通道
 
+> ⏳ **规划接口，代码未实现**（截至 2026-07-27）：后端无 WS 端点（前端已有 utils/websocket.ts 客户端）。计划 M5 Beta 交付。
+
 **连接**：`wss://api.fraud-detection.example.com/api/v1/ws?access_token={jwt}`
 
 **消息格式**：
@@ -1689,6 +1691,8 @@ DSL 语法校验与试运行（不生效）。
 
 ## 9. 报表与统计接口
 
+> ⏳ **规划接口，代码未实现**（截至 2026-07-27）：后端无 /reports 路由。计划 M6 RC 交付。
+
 ### 9.1 GET /reports/summary
 
 查询租户风险概览。
@@ -1768,6 +1772,8 @@ DSL 语法校验与试运行（不生效）。
 ---
 
 ## 10. 模型治理接口
+
+> ⏳ **规划接口，代码未实现**（截至 2026-07-27）：无 /governance 路由（Kill Switch 仅 service 层，前端调用 404）。计划 M5 Beta 交付。
 
 ### 10.1 GET /governance/audit-log
 
