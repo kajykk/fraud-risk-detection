@@ -27,7 +27,6 @@ import {
   Expand,
   Setting,
   SwitchButton,
-  User,
   Bell,
   Moon,
   Sunny

@@ -25,8 +25,7 @@ import {
   ElDescriptions,
   ElDescriptionsItem,
   ElMessage,
-  ElMessageBox,
-  ElLoading
+  ElMessageBox
 } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
@@ -97,11 +96,12 @@ async function createToken() {
     name: value,
     scopes: [],
     status: 'ACTIVE',
-    created_at: new Date().toISOString()
-  })
+    created_at: new Date().toISOString(),
+    expires_at: ''
+  } as any)
 }
 
-async function revokeToken(row: { token_id: string }) {
+async function revokeToken(row: any) {
   await ElMessageBox.confirm('确认吊销该 Token？此操作不可恢复。', '吊销确认', { type: 'warning' })
   tokens.value = tokens.value.filter((t) => t.token_id !== row.token_id)
   ElMessage.success('已吊销')
@@ -117,7 +117,7 @@ const sessions = ref([
   }
 ])
 
-async function revokeSession(row: { session_id: string; current: boolean }) {
+async function revokeSession(row: any) {
   if (row.current) {
     ElMessage.warning('不能注销当前会话，请使用退出登录')
     return
@@ -298,10 +298,10 @@ async function onSwitchTenant(tenantId: string) {
               <ElTableColumn prop="name" label="租户名称" min-width="200" />
               <ElTableColumn prop="tenant_id" label="租户 ID" min-width="220" />
               <ElTableColumn label="类型" width="120">
-                <template #default="{ row }">{{ TENANT_TYPE_LABELS[row.type] }}</template>
+                <template #default="{ row }">{{ TENANT_TYPE_LABELS[row.type as keyof typeof TENANT_TYPE_LABELS] }}</template>
               </ElTableColumn>
               <ElTableColumn label="套餐" width="120">
-                <template #default="{ row }">{{ TENANT_PLAN_LABELS[row.plan] }}</template>
+                <template #default="{ row }">{{ TENANT_PLAN_LABELS[row.plan as keyof typeof TENANT_PLAN_LABELS] }}</template>
               </ElTableColumn>
               <ElTableColumn label="状态" width="100">
                 <template #default="{ row }">

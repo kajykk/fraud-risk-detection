@@ -28,6 +28,7 @@ import { GridComponent, TooltipComponent, LegendComponent, TitleComponent } from
 import { useAuthStore } from '@/stores/auth'
 import { UserRole } from '@/types/enum'
 import { formatPercent, formatAmount } from '@/utils/format'
+import { get } from '@/api/request'
 
 use([CanvasRenderer, LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent])
 
@@ -42,42 +43,53 @@ const dimensionLabel = computed(() => {
   return '租户全局'
 })
 
-// KPI 卡片占位数据（D06 §4.2 关键指标卡）
+// KPI 卡片数据（从后端 /reports/summary 获取）
 const kpi = ref({
-  today_transactions: 128450,
-  blocked_count: 850,
-  case_count: 12,
-  model_auc: 0.942,
-  p99_latency_ms: 87,
-  drift_psi_7d: 0.15,
-  fraud_loss_prevented_cents: 5680000000,
-  actual_loss_cents: 12000000,
-  pass_rate: 0.985,
-  appeal_count: 7
+  today_transactions: 0,
+  blocked_count: 0,
+  case_count: 0,
+  model_auc: 0.0,
+  p99_latency_ms: 0,
+  drift_psi_7d: 0.0,
+  fraud_loss_prevented_cents: 0,
+  actual_loss_cents: 0,
+  pass_rate: 0.0,
+  appeal_count: 0,
+  allow_count: 0,
+  review_count: 0,
+  challenge_count: 0,
+  avg_risk_score: 0.0,
 })
 
-// 趋势图（近 7 天）
-const trendOption = computed(() => ({
-  title: { text: `${dimensionLabel.value} · 近 7 天交易与拦截趋势`, left: 'center', textStyle: { fontSize: 14 } },
-  tooltip: { trigger: 'axis' },
-  legend: { data: ['交易量', '拦截量', '案件数'], bottom: 0 },
-  grid: { left: 40, right: 20, top: 50, bottom: 40 },
-  xAxis: {
-    type: 'category',
-    data: ['07-21', '07-22', '07-23', '07-24', '07-25', '07-26', '07-27']
-  },
-  yAxis: [
-    { type: 'value', name: '交易量' },
-    { type: 'value', name: '拦截量' }
-  ],
-  series: [
-    { name: '交易量', type: 'line', smooth: true, data: [120000, 125000, 130000, 128000, 132000, 127000, 128450] },
-    { name: '拦截量', type: 'line', smooth: true, yAxisIndex: 1, data: [820, 880, 910, 870, 930, 800, 850] },
-    { name: '案件数', type: 'line', smooth: true, yAxisIndex: 1, data: [10, 14, 11, 13, 9, 15, 12] }
-  ]
-}))
+// 趋势图数据（近 7 天）
+const trendData = ref<{ dates: string[]; tx: number[]; blocked: number[]; cases: number[] }>({
+  dates: [],
+  tx: [],
+  blocked: [],
+  cases: [],
+})
 
-// 决策分布饼图（对齐 D05 §4.1 decision 枚举）
+// 趋势图（近 7 天，从 DB 数据动态构建）
+const trendOption = computed(() => {
+  const dates = trendData.value.dates.length > 0
+    ? trendData.value.dates
+    : ['N/A']
+  return {
+    title: { text: `${dimensionLabel.value} · 近 7 天交易与拦截趋势`, left: 'center', textStyle: { fontSize: 14 } },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['交易量', '拦截量', '案件数'], bottom: 0 },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: dates },
+    yAxis: [{ type: 'value', name: '交易量' }, { type: 'value', name: '拦截量' }],
+    series: [
+      { name: '交易量', type: 'line', smooth: true, data: trendData.value.tx.length > 0 ? trendData.value.tx : [0] },
+      { name: '拦截量', type: 'line', smooth: true, yAxisIndex: 1, data: trendData.value.blocked.length > 0 ? trendData.value.blocked : [0] },
+      { name: '案件数', type: 'line', smooth: true, yAxisIndex: 1, data: trendData.value.cases.length > 0 ? trendData.value.cases : [0] },
+    ],
+  }
+})
+
+// 决策分布饼图（从 DB 真实数据构建）
 const decisionOption = computed(() => ({
   title: { text: `${dimensionLabel.value} · 决策分布`, left: 'center', textStyle: { fontSize: 14 } },
   tooltip: { trigger: 'item' },
@@ -87,13 +99,13 @@ const decisionOption = computed(() => ({
       type: 'pie',
       radius: ['40%', '70%'],
       data: [
-        { value: 126500, name: 'ALLOW 放行', itemStyle: { color: '#67c23a' } },
-        { value: 1100, name: 'REVIEW 人工审核', itemStyle: { color: '#e6a23c' } },
-        { value: 850, name: 'DENY 拒绝', itemStyle: { color: '#f56c6c' } },
-        { value: 200, name: 'CHALLENGE 二次验证', itemStyle: { color: '#909399' } }
-      ]
-    }
-  ]
+        { value: kpi.value.allow_count, name: 'ALLOW 放行', itemStyle: { color: '#67c23a' } },
+        { value: kpi.value.review_count, name: 'REVIEW 人工审核', itemStyle: { color: '#e6a23c' } },
+        { value: kpi.value.blocked_count, name: 'DENY 拒绝', itemStyle: { color: '#f56c6c' } },
+        { value: kpi.value.challenge_count, name: 'CHALLENGE 二次验证', itemStyle: { color: '#909399' } },
+      ],
+    },
+  ],
 }))
 
 // 团队 KPI（仅 RISK_MANAGER 可见，对齐 D06 §14.6）
@@ -103,9 +115,30 @@ const teamKpi = ref([
   { member: '分析师 C', open_cases: 6, closed_this_week: 14, sla_rate: 0.98, accuracy: 0.94 }
 ])
 
-onMounted(() => {
-  // TODO: 调用 GET /reports/summary 拉取真实 KPI
-})
+async function fetchSummary() {
+  try {
+    // 并行获取 KPI 汇总 + 趋势数据
+    const [summaryRes, trendRes] = await Promise.all([
+      get<any>('/reports/summary'),
+      get<any>('/reports/trend?days=7'),
+    ])
+    if (summaryRes.data) {
+      Object.assign(kpi.value, summaryRes.data)
+    }
+    if (trendRes.data) {
+      trendData.value = {
+        dates: trendRes.data.dates || [],
+        tx: trendRes.data.tx || [],
+        blocked: trendRes.data.blocked || [],
+        cases: trendRes.data.review || [],
+      }
+    }
+  } catch (e) {
+    // 降级：使用默认空数据
+  }
+}
+
+onMounted(fetchSummary)
 onBeforeUnmount(() => {})
 </script>
 

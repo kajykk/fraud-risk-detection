@@ -56,7 +56,7 @@ async function fetchData() {
   }
 }
 
-function goDetail(row: CaseListItem) {
+function goDetail(row: any) {
   router.push(`/cases/${row.case_id}`)
 }
 

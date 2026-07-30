@@ -12,7 +12,6 @@ import {
   ElInput,
   ElSelect,
   ElOption,
-  ElInputNumber,
   ElButton,
   ElDatePicker,
   ElMessage,
@@ -28,16 +27,13 @@ import {
 } from '@/api/rule'
 import type { ValidateRuleDslResult } from '@/types/rule'
 import { RuleStatus, RuleAction, RuleSeverity, Channel } from '@/types/enum'
-import { RULE_STATUS_LABELS, formatDate } from '@/utils/format'
-import { useAuthStore } from '@/stores/auth'
+import { RULE_STATUS_LABELS } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
-const auth = useAuthStore()
 
 const ruleId = computed(() => (route.params.ruleId ? String(route.params.ruleId) : ''))
 const isCreate = computed(() => !ruleId.value)
-const isEditExisting = computed(() => !isCreate.value)
 
 const form = reactive({
   name: '',

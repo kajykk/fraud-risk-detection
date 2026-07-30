@@ -31,7 +31,7 @@ import {
 } from 'element-plus'
 import { getCase, getCaseTimeline, listCaseComments, addCaseComment, updateCase, closeCase } from '@/api/case'
 import type { CaseDetail, CaseTimelineEvent, CaseComment } from '@/types/case'
-import { CaseStatus, CaseLevel } from '@/types/enum'
+import { CaseStatus } from '@/types/enum'
 import {
   CASE_STATUS_LABELS,
   CASE_LEVEL_LABELS,

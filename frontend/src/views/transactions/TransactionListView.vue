@@ -12,7 +12,6 @@ import {
   ElInput,
   ElSelect,
   ElOption,
-  ElDatePicker,
   ElButton,
   ElTable,
   ElTableColumn,
@@ -69,7 +68,7 @@ function handleReset() {
   fetchData()
 }
 
-function goDetail(row: TransactionDetail) {
+function goDetail(row: any) {
   router.push(`/transactions/${encodeURIComponent(row.external_tx_id)}`)
 }
 

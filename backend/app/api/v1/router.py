@@ -11,6 +11,7 @@ from app.api.v1 import (
     health,
     models,
     pipl,
+    reports,
     rules,
     scores,
     transactions,
@@ -28,5 +29,6 @@ router.include_router(models.router, prefix="/models", tags=["models"])
 router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 router.include_router(gnn.router, prefix="/gnn", tags=["gnn"])
 router.include_router(pipl.router, prefix="/pipl", tags=["pipl"])
+router.include_router(reports.router, prefix="/reports", tags=["reports"])
 
 __all__ = ["router"]

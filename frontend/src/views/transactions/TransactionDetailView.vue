@@ -20,13 +20,12 @@ import {
 } from 'element-plus'
 import { getTransaction, triggerShap, getShapResult, feedbackLabel } from '@/api/transaction'
 import type { TransactionDetail, ShapResult } from '@/types/transaction'
-import { Decision, RiskBand, FeedbackLabel } from '@/types/enum'
+import { FeedbackLabel } from '@/types/enum'
 import {
   DECISION_LABELS,
   DECISION_TAG_TYPE,
   RISK_BAND_LABELS,
   RISK_BAND_TAG_TYPE,
-  formatAmount,
   formatRiskScore,
   formatDate
 } from '@/utils/format'

@@ -104,14 +104,14 @@ async function fetchRelated() {
         id: n.id,
         label: `${n.type}::${n.id}`,
         color: nodeTypeColor[n.type] || '#909399'
-      })
+      } as any)
     }
     for (const e of res.edges) {
       edgesDs.add({
         ...e,
         id: `${e.from}-${e.to}-${e.type}`,
         label: e.type
-      })
+      } as any)
     }
     if (!network) initNetwork()
     ElMessage.success(`已加载 ${res.total_nodes} 个节点（耗时 ${res.evaluated_at_ms}ms）`)

@@ -50,7 +50,7 @@ class ShapFeature(BaseModel):
     """SHAP 单特征。"""
 
     name: str
-    value: float
+    value: float | str | bool | None = None
     shap: float
 
 

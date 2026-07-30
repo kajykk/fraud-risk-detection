@@ -66,7 +66,7 @@ async function fetchData() {
   }
 }
 
-function goEdit(row: RuleListItem) {
+function goEdit(row: any) {
   router.push(`/rules/${row.rule_id}/edit`)
 }
 
@@ -74,7 +74,7 @@ function goCreate() {
   router.push('/rules/create')
 }
 
-async function promote(row: RuleListItem) {
+async function promote(row: any) {
   try {
     const { value } = await ElMessageBox.prompt('输入灰度百分比（0-100）', '灰度推进', {
       inputType: 'number',
@@ -87,7 +87,7 @@ async function promote(row: RuleListItem) {
     try {
       await promoteRule(row.rule_id, {
         from_status: row.status,
-        to_status: row.status === RuleStatus.DRAFT ? RuleStatus.CANARY : RuleStatus.ACTIVE,
+        to_status: row.status === RuleStatus.DRAFT ? RuleStatus.CANARY : RuleStatus.ACTIVE as any,
         canary_percentage: canaryPct,
         approver_id: auth.user?.user_id || ''
       })
@@ -101,7 +101,7 @@ async function promote(row: RuleListItem) {
   }
 }
 
-async function rollback(row: RuleListItem) {
+async function rollback(row: any) {
   try {
     const { value } = await ElMessageBox.prompt('输入回滚原因', '紧急回滚', {
       inputType: 'textarea',
@@ -128,7 +128,7 @@ async function rollback(row: RuleListItem) {
   }
 }
 
-async function retire(row: RuleListItem) {
+async function retire(row: any) {
   try {
     const { value } = await ElMessageBox.prompt('输入下线原因', '下线规则', {
       inputType: 'textarea',
@@ -152,7 +152,7 @@ async function retire(row: RuleListItem) {
   }
 }
 
-async function remove(row: RuleListItem) {
+async function remove(row: any) {
   await ElMessageBox.confirm(`确认软删除规则「${row.name}」？`, '删除确认', {
     type: 'warning'
   })

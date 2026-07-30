@@ -14,7 +14,6 @@ import {
   ElTag,
   ElPagination,
   ElInput,
-  ElInputNumber,
   ElMessage,
   ElMessageBox,
   ElLoading
@@ -49,7 +48,7 @@ async function fetchData() {
   }
 }
 
-function goDetail(row: ModelListItem) {
+function goDetail(row: any) {
   router.push(`/models/${row.model_id}`)
 }
 

@@ -108,6 +108,11 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------ #
     app.include_router(v1_router, prefix="/api/v1")
 
+    # 健康检查同时挂在根路径，方便探针直接访问 /health /live /ready
+    from app.api.v1.health import router as health_router
+
+    app.include_router(health_router, tags=["health"])
+
     # ------------------------------------------------------------------ #
     # 异常 handler
     # ------------------------------------------------------------------ #

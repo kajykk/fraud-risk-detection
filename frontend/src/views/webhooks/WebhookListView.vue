@@ -35,7 +35,7 @@ import {
   type WebhookDelivery
 } from '@/api/webhook'
 import { WebhookStatus, WebhookDeliveryStatus } from '@/types/enum'
-import { formatDate, formatRelative } from '@/utils/format'
+import { formatDate } from '@/utils/format'
 
 const loading = ref(false)
 const list = ref<WebhookListItem[]>([])
@@ -99,7 +99,7 @@ function openCreate() {
   dialogVisible.value = true
 }
 
-function openEdit(row: WebhookListItem) {
+function openEdit(row: any) {
   editingId.value = row.id
   form.url = row.url
   form.events = [...row.events]
@@ -143,7 +143,7 @@ async function submit() {
   }
 }
 
-async function remove(row: WebhookListItem) {
+async function remove(row: any) {
   await ElMessageBox.confirm(`确认注销 Webhook「${row.url}」？`, '注销确认', { type: 'warning' })
   const svc = ElLoading.service({ lock: true, text: '注销中...' })
   try {
@@ -155,7 +155,7 @@ async function remove(row: WebhookListItem) {
   }
 }
 
-async function test(row: WebhookListItem) {
+async function test(row: any) {
   const { value } = await ElMessageBox.prompt('输入测试事件类型', '测试投递', {
     inputValue: row.events[0] || 'transaction.scored'
   })
@@ -168,7 +168,7 @@ async function test(row: WebhookListItem) {
   }
 }
 
-async function openDeliveries(row: WebhookListItem) {
+async function openDeliveries(row: any) {
   deliveriesQuery.webhookId = row.id
   deliveriesQuery.page = 1
   deliveriesVisible.value = true

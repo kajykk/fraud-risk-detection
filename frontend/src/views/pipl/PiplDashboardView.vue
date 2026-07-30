@@ -25,8 +25,6 @@ import {
   ElDescriptionsItem,
   ElEmpty,
   ElDatePicker,
-  ElRadioGroup,
-  ElRadio,
   ElSwitch,
   ElMessage,
   ElMessageBox,
@@ -40,7 +38,6 @@ import {
   requestDeletion,
   getDeletionStatus,
   requestRectification,
-  type ConsentRecord,
   type ConsentListResult,
   type DataExportTask,
   type DeletionRequest
@@ -78,7 +75,7 @@ async function fetchConsents() {
   }
 }
 
-async function onWithdraw(c: ConsentRecord) {
+async function onWithdraw(c: any) {
   try {
     const { value } = await ElMessageBox.prompt('输入撤回原因', '撤回同意', {
       inputType: 'textarea',

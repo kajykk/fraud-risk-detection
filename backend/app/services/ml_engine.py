@@ -105,6 +105,19 @@ class MLScoringEngine:
         modality_scores.fused_score = self._fuse(modality_scores)
         return modality_scores
 
+    def _to_modality_score(self, modality: str, result: Any) -> ModalityScore | None:
+        """Convert an asyncio.gather result into a ModalityScore (or None on exception)."""
+        if isinstance(result, ModalityScore):
+            return result
+        if isinstance(result, Exception):
+            logger.error(
+                "modality_gather_exception",
+                modality=modality,
+                error=str(result),
+            )
+            return None
+        return None
+
     async def _predict_with_fallback(
         self,
         modality: str,

@@ -9,7 +9,11 @@ declare module 'vue' {
   export interface GlobalComponents {
     BlankLayout: typeof import('./src/components/layouts/BlankLayout.vue')['default']
     DefaultLayout: typeof import('./src/components/layouts/DefaultLayout.vue')['default']
+    ElTag: typeof import('element-plus/es')['ElTag']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+  }
+  export interface ComponentCustomProperties {
+    vLoading: typeof import('element-plus/es')['ElLoadingDirective']
   }
 }

@@ -125,10 +125,13 @@ class ScoringOrchestrator:
             decision_id=decision_id,
         )
 
-        # 5. Redis 缓存写入（fire-and-forget）
+        # 5. DB 持久化（fire-and-forget，不阻塞主路径）
+        asyncio.create_task(self._persist_to_db(tenant_id, transaction, result))
+
+        # 6. Redis 缓存写入（fire-and-forget）
         asyncio.create_task(self._cache_score(tenant_id, transaction.get("external_tx_id", ""), result))
 
-        # 6. Kafka 异步发布（fire-and-forget，ADR-014）
+        # 7. Kafka 异步发布（fire-and-forget，ADR-014）
         asyncio.create_task(self._publish_to_kafka(tenant_id, transaction, result))
 
         logger.info(
@@ -224,6 +227,87 @@ class ScoringOrchestrator:
             latency_ms=int((time.perf_counter() - start) * 1000),
             decision_id=decision_id,
         )
+
+    async def _persist_to_db(
+        self,
+        tenant_id: str,
+        transaction: dict[str, Any],
+        result: ScoreResult,
+    ) -> None:
+        """持久化交易 + 评分到 PostgreSQL（fire-and-forget）。
+
+        由于 Kafka Consumer 尚未实现，直接在主进程异步写入。
+        生产环境应由 Kafka Consumer 消费（ADR-014）。
+        """
+        try:
+            from datetime import datetime, timezone
+            from decimal import Decimal
+
+            from app.db.session import get_session_factory
+            from app.models.transaction import Score, Transaction
+
+            factory = get_session_factory()
+            async with factory() as session:
+                # 1. 写入交易记录
+                occurred_at_str = transaction.get("occurred_at", "")
+                if occurred_at_str:
+                    occurred_at = datetime.fromisoformat(occurred_at_str.replace("Z", "+00:00"))
+                else:
+                    occurred_at = datetime.now(timezone.utc)
+
+                tx = Transaction(
+                    tenant_id=uuid.UUID(tenant_id),
+                    external_tx_id=transaction.get("external_tx_id", str(uuid.uuid4())),
+                    card_token=transaction.get("card_token", "tok_unknown"),
+                    card_bin=transaction.get("card_bin", "000000"),
+                    card_last4=transaction.get("card_last4", "0000"),
+                    amount=int(transaction.get("amount", 0)),
+                    currency=transaction.get("currency", "CNY"),
+                    tx_type=transaction.get("tx_type"),
+                    channel=transaction.get("channel"),
+                    is_3ds_verified=transaction.get("is_3ds_verified", False),
+                    merchant_category=transaction.get("merchant_category"),
+                    user_account_id=transaction.get("user_id"),
+                    note_text=transaction.get("note_text"),
+                    risk_features={},
+                    occurred_at=occurred_at,
+                    received_at=datetime.now(timezone.utc),
+                    metadata_={
+                        "amount": transaction.get("amount", 0),
+                        "currency": transaction.get("currency", "CNY"),
+                        "merchant_id": transaction.get("merchant_id"),
+                    },
+                )
+                session.add(tx)
+                await session.flush()  # 获取 tx.id
+
+                # 2. 写入评分记录
+                score = Score(
+                    tenant_id=uuid.UUID(tenant_id),
+                    transaction_id=tx.id,
+                    model_version=result.model_version,
+                    rule_version="rule_v1",
+                    risk_score=Decimal(str(result.risk_score)),
+                    risk_band=result.risk_band.value,
+                    decision=result.decision.value,
+                    rule_hits=result.rule_hits,
+                    modality_scores=result.modality_scores,
+                    feature_values={},
+                    cached=result.cached,
+                    latency_ms=result.latency_ms,
+                )
+                session.add(score)
+                await session.commit()
+
+                logger.info(
+                    "db_persist_ok",
+                    tenant_id=tenant_id,
+                    transaction_id=str(tx.id),
+                    external_tx_id=tx.external_tx_id,
+                    decision=result.decision.value,
+                )
+        except Exception as exc:
+            logger.warning("db_persist_failed", error=str(exc), tenant_id=tenant_id)
 
     async def _cache_score(self, tenant_id: str, external_tx_id: str, result: ScoreResult) -> None:
         """Redis 缓存写入（score_cache:{tenant}:{tx_hash}，TTL 24h）。"""

@@ -13,7 +13,6 @@ import {
   ElButton,
   ElTable,
   ElTableColumn,
-  ElProgress,
   ElInput,
   ElInputNumber,
   ElDialog,

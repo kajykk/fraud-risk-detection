@@ -330,7 +330,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             request,
             code="INVALID_PARAMS",
             message="request validation failed",
-            http_status=400,
+            http_status=422,
             data={"errors": exc.errors()},
         )
 
