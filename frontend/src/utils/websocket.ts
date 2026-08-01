@@ -46,7 +46,7 @@ export function useWebSocket(tokenRef: () => string | null) {
   function buildUrl(): string | null {
     const token = tokenRef()
     if (!token) return null
-    const base = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000/api/v1/ws'
+    const base = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8002/api/v1/ws'
     const sep = base.includes('?') ? '&' : '?'
     return `${base}${sep}access_token=${encodeURIComponent(token)}`
   }

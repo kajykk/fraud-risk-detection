@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel, Field
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class ErrorCode(str, Enum):
@@ -127,7 +131,7 @@ class ApiResponse(BaseModel, Generic[T]):
     data: T | None = None
     request_id: str | None = None
     trace_id: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.utcnow())
+    timestamp: datetime = Field(default_factory=_utcnow)
 
 
 class PageMeta(BaseModel):

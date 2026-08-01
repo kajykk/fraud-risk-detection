@@ -21,11 +21,11 @@ async def get_summary(
     """仪表盘 KPI 汇总（从 PostgreSQL 实时聚合）。"""
     from sqlalchemy import func, select
 
-    from app.db.session import get_session_factory
+    from app.db.session import session_scope
     from app.models.transaction import Score, Transaction
 
-    factory = get_session_factory()
-    async with factory() as session:
+
+    async with session_scope(tenant_id) as session:
         # 总交易数
         total_tx_q = select(func.count()).select_from(Transaction).where(
             Transaction.tenant_id == tenant_id
@@ -90,13 +90,13 @@ async def get_trend(
     days: int = 7,
 ) -> ApiResponse[dict]:
     """仪表盘趋势数据（近 N 天每日交易数 / 拦截数 / 案件数）。"""
-    from sqlalchemy import Date, func, select
+    from sqlalchemy import func, select
 
-    from app.db.session import get_session_factory
+    from app.db.session import session_scope
     from app.models.transaction import Score, Transaction
 
-    factory = get_session_factory()
-    async with factory() as session:
+
+    async with session_scope(tenant_id) as session:
         # 按 DATE(occurred_at) 聚合
         day_col = func.date_trunc("day", Transaction.occurred_at).label("day")
         q = (

@@ -11,8 +11,8 @@
     fallback(tenant_id) -> ModalityScore  # 熔断兜底
 """
 
+from .behavior import BehaviorModality
 from .structured import StructuredModality
 from .text import TextModality
-from .behavior import BehaviorModality
 
 __all__ = ["StructuredModality", "TextModality", "BehaviorModality"]

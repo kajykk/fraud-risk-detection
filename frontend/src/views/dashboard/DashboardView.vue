@@ -133,7 +133,7 @@ async function fetchSummary() {
         cases: trendRes.data.review || [],
       }
     }
-  } catch (e) {
+  } catch {
     // 降级：使用默认空数据
   }
 }

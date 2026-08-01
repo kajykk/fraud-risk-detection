@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
 
 import structlog
 
@@ -39,6 +38,8 @@ def _build_model(in_channels: int, seq_len: int):
             self.fc = nn.Linear(128, 1)
 
         def forward(self, x):
+            import torch  # type: ignore
+
             x = self.relu(self.conv1(x))
             x = self.relu(self.conv2(x))
             x = self.relu(self.conv3(x))
@@ -48,12 +49,12 @@ def _build_model(in_channels: int, seq_len: int):
     return Behavior1DCNN(in_channels, seq_len)
 
 
-def _pad_or_truncate(series: List[List[float]], seq_len: int, n_features: int):
+def _pad_or_truncate(series: list[list[float]], seq_len: int, n_features: int):
     import numpy as np  # type: ignore
 
     if len(series) >= seq_len:
         series = series[:seq_len]
-    cols = list(zip(*series)) if series else [[0.0] * seq_len for _ in range(n_features)]
+    cols = list(zip(*series, strict=False)) if series else [[0.0] * seq_len for _ in range(n_features)]
     while len(cols) < n_features:
         cols.append([0.0] * seq_len)
     for i, col in enumerate(cols):
@@ -65,8 +66,8 @@ def _pad_or_truncate(series: List[List[float]], seq_len: int, n_features: int):
 
 
 def train(
-    series_list: List[List[List[float]]],
-    labels: List[int],
+    series_list: list[list[list[float]]],
+    labels: list[int],
     save_path: str,
     epochs: int = 10,
     batch_size: int = 64,
@@ -110,7 +111,7 @@ def train(
 
     # 评估
     model.eval()
-    probas: List[float] = []
+    probas: list[float] = []
     with torch.no_grad():
         for batch_x, _ in DataLoader(dataset, batch_size=batch_size):
             outputs = model(batch_x.to(device)).cpu().numpy().flatten()

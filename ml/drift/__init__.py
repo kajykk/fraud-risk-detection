@@ -5,15 +5,14 @@
     drift_metric: PSI | KL | KS | WASSERSTEIN
 """
 
+from .alerter import DriftAlerter, DriftAlertRecord
 from .detector import (
-    PSI_STABLE,
     PSI_SLIGHT,
-    PSI_SIGNIFICANT,
+    PSI_STABLE,
     DriftDetector,
     compute_kl,
     compute_psi,
 )
-from .alerter import DriftAlerter, DriftAlertRecord
 
 __all__ = [
     "DriftDetector",
@@ -23,5 +22,4 @@ __all__ = [
     "compute_kl",
     "PSI_STABLE",
     "PSI_SLIGHT",
-    "PSI_SIGNIFICANT",
 ]

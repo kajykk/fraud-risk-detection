@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import BigInteger, Boolean, DateTime, String, Text
@@ -19,6 +19,10 @@ from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TenantMixin
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class AuditLog(Base, PKMixin, TenantMixin):
@@ -46,7 +50,7 @@ class AuditLog(Base, PKMixin, TenantMixin):
     # 是否 CDE 区
     cde_zone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 

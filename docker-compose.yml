@@ -94,6 +94,7 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
+      GNN_SERVICE_URL: http://gnn:8502
     ports:
       - "8002:8000"
     depends_on:
@@ -162,6 +163,43 @@ services:
       - ./backend:/app
       - /app/__pycache__
     command: celery -A app.workers.celery_app beat --loglevel=info
+    networks:
+      - frd-net
+
+  # ---------- ML 评分推理服务 ----------
+  ml-serving:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    container_name: frd-ml-serving
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8501:8501"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - frd-net
+
+  # ---------- GNN 团伙检测服务 ----------
+  gnn-serving:
+    build:
+      context: ./gnn
+      dockerfile: Dockerfile
+    container_name: frd-gnn-serving
+    restart: unless-stopped
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frd_neo4j_password}
+    ports:
+      - "8502:8502"
+    depends_on:
+      neo4j:
+        condition: service_healthy
     networks:
       - frd-net
 

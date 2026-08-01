@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import structlog
 
@@ -24,8 +24,8 @@ class FeatureSchema:
 
     name: str
     version: str
-    feature_names: List[str]
-    categorical_features: List[str]
+    feature_names: list[str]
+    categorical_features: list[str]
 
     def to_json(self) -> str:
         return json.dumps(
@@ -39,7 +39,7 @@ class FeatureSchema:
         )
 
     @classmethod
-    def from_json(cls, raw: str) -> "FeatureSchema":
+    def from_json(cls, raw: str) -> FeatureSchema:
         data = json.loads(raw)
         return cls(
             name=data["name"],
@@ -91,14 +91,14 @@ class FeatureStore:
     def __init__(self, schema: FeatureSchema = DEFAULT_STRUCTURED_FEATURES) -> None:
         self.schema = schema
 
-    def engineer(self, raw: Dict[str, Any]) -> List[float]:
+    def engineer(self, raw: dict[str, Any]) -> list[float]:
         """原始特征 → 数值向量（按 schema.feature_names 顺序）。"""
-        vector: List[float] = []
+        vector: list[float] = []
         for name in self.schema.feature_names:
             vector.append(float(self._extract(raw, name)))
         return vector
 
-    def _extract(self, raw: Dict[str, Any], name: str) -> float:
+    def _extract(self, raw: dict[str, Any], name: str) -> float:
         if name in raw:
             try:
                 return float(raw[name])

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 import structlog
 
@@ -23,8 +22,7 @@ logger = structlog.get_logger(__name__)
 
 # PSI 阈值
 PSI_STABLE = 0.1
-PSI_SLIGHT = 0.25
-PSI_SIGNIFICANT = 0.25  # 与 PSI_SLIGHT 一致，≥0.25 触发显著漂移
+PSI_SLIGHT = 0.25  # ≥0.25 触发显著漂移（CRITICAL，ADR-013 L2 Kill Switch）
 
 
 @dataclass(frozen=True)
@@ -39,8 +37,8 @@ class DriftResult:
 
 
 def compute_psi(
-    current_dist: List[float],
-    reference_dist: List[float],
+    current_dist: list[float],
+    reference_dist: list[float],
     n_bins: int = 10,
     eps: float = 1e-6,
 ) -> float:
@@ -65,7 +63,7 @@ def compute_psi(
     ]
     bins = [-math.inf] + quantiles + [math.inf]
 
-    def histogram(values: List[float]) -> List[float]:
+    def histogram(values: list[float]) -> list[float]:
         counts = [0.0] * n_bins
         for v in values:
             for i in range(n_bins):
@@ -79,14 +77,14 @@ def compute_psi(
     p_cur = histogram(current_dist)
 
     psi = 0.0
-    for p, q in zip(p_ref, p_cur):
+    for p, q in zip(p_ref, p_cur, strict=False):
         p = max(p, eps)
         q = max(q, eps)
         psi += (p - q) * math.log(p / q)
     return float(psi)
 
 
-def compute_kl(p: List[float], q: List[float], eps: float = 1e-6) -> float:
+def compute_kl(p: list[float], q: list[float], eps: float = 1e-6) -> float:
     """KL 散度 KL(p || q)。
 
     Args:
@@ -104,14 +102,14 @@ def compute_kl(p: List[float], q: List[float], eps: float = 1e-6) -> float:
     norm_p = [x / sum_p for x in p]
     norm_q = [x / sum_q for x in q]
     kl = 0.0
-    for pi, qi in zip(norm_p, norm_q):
+    for pi, qi in zip(norm_p, norm_q, strict=False):
         pi = max(pi, eps)
         qi = max(qi, eps)
         kl += pi * math.log(pi / qi)
     return float(kl)
 
 
-def classify_severity(metric_type: str, value: float) -> Tuple[str, bool]:
+def classify_severity(metric_type: str, value: float) -> tuple[str, bool]:
     """根据指标值返回 (severity, is_drifted)。"""
     if metric_type == "PSI":
         if value < PSI_STABLE:
@@ -132,8 +130,8 @@ class DriftDetector:
 
     def detect_psi(
         self,
-        current: List[float],
-        reference: List[float],
+        current: list[float],
+        reference: list[float],
         n_bins: int = 10,
     ) -> DriftResult:
         value = compute_psi(current, reference, n_bins=n_bins)
@@ -147,7 +145,7 @@ class DriftDetector:
         )
 
     def detect_kl(
-        self, current: List[float], reference: List[float]
+        self, current: list[float], reference: list[float]
     ) -> DriftResult:
         value = compute_kl(current, reference)
         severity, is_drifted = classify_severity("KL", value)
@@ -163,7 +161,6 @@ class DriftDetector:
 __all__ = [
     "PSI_STABLE",
     "PSI_SLIGHT",
-    "PSI_SIGNIFICANT",
     "DriftResult",
     "DriftDetector",
     "compute_psi",

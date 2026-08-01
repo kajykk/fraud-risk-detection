@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, List, Optional
+from typing import Any
 
 import structlog
 
@@ -31,13 +31,13 @@ class BehaviorModality:
     name = "behavior"
 
     def __init__(self) -> None:
-        self._model: Optional[Any] = None  # torch.nn.Module
-        self._device: Optional[Any] = None
+        self._model: Any | None = None  # torch.nn.Module
+        self._device: Any | None = None
         self._seq_len: int = 50  # 固定序列长度
         self._n_features: int = 8  # 每帧特征维度（点击/输入/滑动等）
-        self._redis: Optional[Any] = None
+        self._redis: Any | None = None
 
-    async def load_model(self, redis_client: Optional[Any] = None) -> None:
+    async def load_model(self, redis_client: Any | None = None) -> None:
         """加载 1D-CNN 模型工件。"""
         self._redis = redis_client
         try:
@@ -73,6 +73,8 @@ class BehaviorModality:
 
             def forward(self, x):
                 # x shape: (batch, in_channels, seq_len)
+                import torch  # type: ignore
+
                 x = self.relu(self.conv1(x))
                 x = self.relu(self.conv2(x))
                 x = self.relu(self.conv3(x))
@@ -82,7 +84,7 @@ class BehaviorModality:
         return Behavior1DCNN(self._n_features, self._seq_len)
 
     async def predict(
-        self, series: List[List[float]], tenant_id: str
+        self, series: list[list[float]], tenant_id: str
     ) -> ModalityScore:
         """1D-CNN 推理（线程池执行）。"""
         if self._model is None:
@@ -106,7 +108,7 @@ class BehaviorModality:
             logger.warning("behavior.predict.failed", error=str(exc))
             return await self.fallback(tenant_id, reason="predict_exception")
 
-    def _infer_sync(self, series: List[List[float]]) -> float:
+    def _infer_sync(self, series: list[list[float]]) -> float:
         import torch  # type: ignore
 
         with torch.no_grad():
@@ -115,14 +117,14 @@ class BehaviorModality:
             output = self._model(tensor)
             return float(output.squeeze().item())
 
-    def _pad_or_truncate(self, series: List[List[float]]):
+    def _pad_or_truncate(self, series: list[list[float]]):
         import torch  # type: ignore
 
         # 转置为 (n_features, seq_len) 并 pad/truncate 到固定长度
         if len(series) >= self._seq_len:
             series = series[: self._seq_len]
         # 转置
-        cols = list(zip(*series)) if series else [[0.0] * self._n_features]
+        cols = list(zip(*series, strict=False)) if series else [[0.0] * self._n_features]
         while len(cols) < self._n_features:
             cols.append([0.0] * len(series))
         for i, col in enumerate(cols):

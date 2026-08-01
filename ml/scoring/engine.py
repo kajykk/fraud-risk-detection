@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import structlog
 
@@ -47,10 +47,10 @@ class ModalityScores:
     fused_score: float
     risk_band: str
     latency_ms: float
-    fallback_flags: Dict[str, str] = field(default_factory=dict)
+    fallback_flags: dict[str, str] = field(default_factory=dict)
     all_fallback: bool = False  # 三模态均熔断 → 触发 L3 Kill Switch
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "structured": {
                 "score": self.structured.score,
@@ -98,14 +98,14 @@ class MLScoringEngine:
         self.text = TextModality()
         self.behavior = BehaviorModality()
         self.fusion = FusionEngine()
-        self._redis: Optional[Any] = None
-        self._failure_counters: Dict[str, int] = {
+        self._redis: Any | None = None
+        self._failure_counters: dict[str, int] = {
             "structured": 0,
             "text": 0,
             "behavior": 0,
         }
 
-    async def load(self, redis_client: Optional[Any] = None) -> None:
+    async def load(self, redis_client: Any | None = None) -> None:
         """加载三模态模型工件 + Redis 客户端。"""
         self._redis = redis_client
         await asyncio.gather(
@@ -117,9 +117,9 @@ class MLScoringEngine:
 
     async def predict(
         self,
-        structured_features: Dict[str, Any],
+        structured_features: dict[str, Any],
         text_content: str,
-        behavior_series: List[List[float]],
+        behavior_series: list[list[float]],
         tenant_id: str,
     ) -> ModalityScores:
         """三模态并行评分（ADR-011 严格实现）。
@@ -168,7 +168,7 @@ class MLScoringEngine:
         )
 
         # 构造 fallback_flags
-        fallback_flags: Dict[str, str] = {}
+        fallback_flags: dict[str, str] = {}
         for name, score in (
             ("structured", structured_score),
             ("text", text_score),
@@ -240,7 +240,7 @@ class MLScoringEngine:
         timeout_seconds = modality_cfg.timeout_ms / 1000.0
         try:
             return await asyncio.wait_for(coro, timeout=timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "ml.modality.timeout",
                 modality=modality_name,

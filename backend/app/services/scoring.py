@@ -22,6 +22,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 from app.config import settings
@@ -156,7 +157,7 @@ class ScoringOrchestrator:
         if risk_score >= 0.85:
             ml_decision = Decision.DENY
         elif risk_score >= 0.60:
-            ml_decision = Decision.REVIEW
+            ml_decision = Decision.CHALLENGE
         elif risk_score >= 0.30:
             ml_decision = Decision.REVIEW
         else:
@@ -240,20 +241,19 @@ class ScoringOrchestrator:
         生产环境应由 Kafka Consumer 消费（ADR-014）。
         """
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
             from decimal import Decimal
 
-            from app.db.session import get_session_factory
+            from app.db.session import session_scope
             from app.models.transaction import Score, Transaction
 
-            factory = get_session_factory()
-            async with factory() as session:
+            async with session_scope(tenant_id) as session:
                 # 1. 写入交易记录
                 occurred_at_str = transaction.get("occurred_at", "")
                 if occurred_at_str:
                     occurred_at = datetime.fromisoformat(occurred_at_str.replace("Z", "+00:00"))
                 else:
-                    occurred_at = datetime.now(timezone.utc)
+                    occurred_at = datetime.now(UTC)
 
                 tx = Transaction(
                     tenant_id=uuid.UUID(tenant_id),
@@ -271,7 +271,7 @@ class ScoringOrchestrator:
                     note_text=transaction.get("note_text"),
                     risk_features={},
                     occurred_at=occurred_at,
-                    received_at=datetime.now(timezone.utc),
+                    received_at=datetime.now(UTC),
                     metadata_={
                         "amount": transaction.get("amount", 0),
                         "currency": transaction.get("currency", "CNY"),
@@ -297,7 +297,7 @@ class ScoringOrchestrator:
                     latency_ms=result.latency_ms,
                 )
                 session.add(score)
-                await session.commit()
+                # session_scope 退出时统一 commit
 
                 logger.info(
                     "db_persist_ok",
@@ -312,9 +312,9 @@ class ScoringOrchestrator:
     async def _cache_score(self, tenant_id: str, external_tx_id: str, result: ScoreResult) -> None:
         """Redis 缓存写入（score_cache:{tenant}:{tx_hash}，TTL 24h）。"""
         try:
-            from app.db.redis import get_redis
-
             import json
+
+            from app.db.redis import get_redis
 
             redis = get_redis()
             key = f"score_cache:{tenant_id}:{external_tx_id}"

@@ -165,7 +165,7 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/403',
     name: 'forbidden',
-    component: () => import('@/views/auth/LoginView.vue'),
+    component: () => import('@/views/auth/ForbiddenView.vue'),
     meta: { public: true, layout: 'blank', title: '无权限' }
   },
   {

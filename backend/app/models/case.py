@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, String, Text
@@ -14,6 +14,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TenantMixin
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class Case(Base, PKMixin, TenantMixin):
@@ -44,7 +48,7 @@ class Case(Base, PKMixin, TenantMixin):
     chargeback_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     graph_summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -64,7 +68,7 @@ class CaseEvent(Base, PKMixin, TenantMixin):
     operator_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 
@@ -91,7 +95,7 @@ class Appeal(Base, PKMixin, TenantMixin):
     )
     review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 

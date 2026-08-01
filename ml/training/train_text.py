@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
 
 import structlog
 
@@ -26,8 +25,8 @@ class TextTrainResult:
 
 
 def train(
-    texts: List[str],
-    labels: List[int],
+    texts: list[str],
+    labels: list[int],
     save_path: str,
     base_model: str = "bert-base-chinese",
     epochs: int = 3,
@@ -36,7 +35,6 @@ def train(
     max_length: int = 128,
 ) -> TextTrainResult:
     """微调 BERT 二分类模型。"""
-    import numpy as np  # type: ignore
     import torch  # type: ignore
     from torch.utils.data import DataLoader, Dataset  # type: ignore
     from transformers import (  # type: ignore
@@ -102,7 +100,7 @@ def train(
 
     # 评估
     model.eval()
-    probas: List[float] = []
+    probas: list[float] = []
     with torch.no_grad():
         for batch in DataLoader(dataset, batch_size=batch_size):
             inputs = {

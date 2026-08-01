@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
-from .community.detector import Community, CommunityDetector, CommunityStats
+from .community.detector import Community, CommunityDetector
 from .config import settings
 from .models.graphsage import GraphSAGE
 

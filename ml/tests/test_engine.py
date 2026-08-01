@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -15,13 +15,13 @@ class _FakeRedis:
     """最小可用 Redis mock（仅实现 LPUSH/LRANGE/LTRIM/GET/SET/PING/CLOSE）。"""
 
     def __init__(self) -> None:
-        self._store: Dict[str, List[float]] = {}
+        self._store: dict[str, list[float]] = {}
 
     async def rpush(self, key: str, value: float) -> int:
         self._store.setdefault(key, []).append(float(value))
         return len(self._store[key])
 
-    async def lrange(self, key: str, start: int, end: int) -> List[float]:
+    async def lrange(self, key: str, start: int, end: int) -> list[float]:
         values = self._store.get(key, [])
         if end == -1:
             end = len(values) - 1

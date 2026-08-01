@@ -138,6 +138,12 @@ class KillSwitchConfig(BaseSettings):
     kill_switch_pubsub_channel: str = "frd:kill_switch"
 
 
+class GNNConfig(BaseSettings):
+    """GNN 服务配置（D05 §7，环境变量 GNN_SERVICE_URL 可覆盖）。"""
+
+    gnn_service_url: str = "http://localhost:8502"
+
+
 class LLMConfig(BaseSettings):
     """LLM 配置（ADR-012，国内 API，PIPL 合规）。"""
 
@@ -170,6 +176,7 @@ class Settings(
     CeleryConfig,
     ScoringConfig,
     KillSwitchConfig,
+    GNNConfig,
     LLMConfig,
     TokenizationConfig,
 ):

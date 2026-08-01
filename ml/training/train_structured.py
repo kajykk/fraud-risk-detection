@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 import structlog
 
@@ -26,8 +26,8 @@ class StructuredTrainResult:
 
 
 def train(
-    features: List[List[float]],
-    labels: List[int],
+    features: list[list[float]],
+    labels: list[int],
     save_path: str,
     params: dict[str, Any] | None = None,
 ) -> StructuredTrainResult:

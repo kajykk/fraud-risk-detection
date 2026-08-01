@@ -31,6 +31,14 @@ celery_app = Celery(
     ],
 )
 
+# 测试环境：任务内联执行，不连接 broker（避免测试挂起）；不传播异常，失败时返回 FAILED 状态
+if settings.app_env == "test":
+    celery_app.conf.update(
+        task_always_eager=True,
+        task_eager_propagates=False,
+        result_backend="cache+memory://",
+    )
+
 celery_app.conf.update(
     # 序列化
     task_serializer="json",

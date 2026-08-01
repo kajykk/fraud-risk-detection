@@ -18,7 +18,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 import structlog
 
@@ -33,13 +33,13 @@ MODEL_STATUSES = {"REGISTERED", "CANARY", "ACTIVE", "RETIRED"}
 class ModelRegistration:
     """模型注册信息（对应 model_versions 一行）。"""
 
-    tenant_id: Optional[str]
+    tenant_id: str | None
     model_type: str
     version: str
     status: str = "REGISTERED"
     metrics: dict[str, Any] = None
     training_data_hash: str = ""
-    feature_names: List[str] = None
+    feature_names: list[str] = None
     artifacts_path: str = ""
     sha256: str = ""
     canary_percent: int = 0
@@ -76,7 +76,7 @@ class ModelRegistry:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._pool: Optional[Any] = None
+        self._pool: Any | None = None
 
     async def connect(self) -> None:
         try:
@@ -92,7 +92,7 @@ class ModelRegistry:
             await self._pool.close()
             self._pool = None
 
-    async def register(self, registration: ModelRegistration) -> Optional[str]:
+    async def register(self, registration: ModelRegistration) -> str | None:
         """写入 model_versions 表（status=REGISTERED）。
 
         Returns:

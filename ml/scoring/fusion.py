@@ -8,8 +8,6 @@ D03 §4.3 融合策略：
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 import structlog
 
 from .config import settings
@@ -22,15 +20,15 @@ class FusionEngine:
     """三模态融合引擎（加权 + Stacking 预留）。"""
 
     def __init__(self) -> None:
-        self._weights: Dict[str, float] = dict(settings.fusion.weights)
+        self._weights: dict[str, float] = dict(settings.fusion.weights)
         self._fallback_weight: float = settings.fusion.fallback_weight
-        self._meta_model: Optional[object] = None  # Stacking 元学习器
+        self._meta_model: object | None = None  # Stacking 元学习器
 
     def set_meta_model(self, model: object) -> None:
         """注入 Stacking 元学习器（可选）。"""
         self._meta_model = model
 
-    def fuse(self, scores: Dict[str, ModalityScore]) -> float:
+    def fuse(self, scores: dict[str, ModalityScore]) -> float:
         """三模态加权融合。
 
         Args:
@@ -43,7 +41,7 @@ class FusionEngine:
             return 0.5
 
         # Step 1: 计算每个模态的有效权重（熔断模态降权至 fallback_weight）
-        effective_weights: Dict[str, float] = {}
+        effective_weights: dict[str, float] = {}
         for name, score in scores.items():
             base = self._weights.get(name, 0.0)
             if score.fallback:
@@ -70,7 +68,7 @@ class FusionEngine:
         return float(min(max(fused, 0.0), 1.0))
 
     def _apply_meta_model(
-        self, scores: Dict[str, ModalityScore], weighted_score: float
+        self, scores: dict[str, ModalityScore], weighted_score: float
     ) -> float:
         """Stacking 元学习器融合（占位实现）。"""
         # TODO: 加载训练好的 fusion.pt，输入 [struct, text, behavior] → 输出最终分数

@@ -11,14 +11,12 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
-def compute_auc(labels: List[int], probas: List[float]) -> float:
+def compute_auc(labels: list[int], probas: list[float]) -> float:
     """AUC-ROC。"""
     try:
         from sklearn.metrics import roc_auc_score  # type: ignore
@@ -31,7 +29,7 @@ def compute_auc(labels: List[int], probas: List[float]) -> float:
         return 0.5
 
 
-def compute_f1(labels: List[int], preds: List[int]) -> float:
+def compute_f1(labels: list[int], preds: list[int]) -> float:
     """F1 分数。"""
     try:
         from sklearn.metrics import f1_score  # type: ignore
@@ -43,7 +41,7 @@ def compute_f1(labels: List[int], preds: List[int]) -> float:
 
 
 def compute_recall_at_fpr(
-    labels: List[int], probas: List[float], fpr_threshold: float = 0.01
+    labels: list[int], probas: list[float], fpr_threshold: float = 0.01
 ) -> float:
     """Recall@1%FPR：FPR=1% 时的 Recall。"""
     try:
@@ -64,8 +62,8 @@ def compute_recall_at_fpr(
 
 
 def compute_precision_recall(
-    labels: List[int], probas: List[float], threshold: float = 0.5
-) -> Tuple[float, float]:
+    labels: list[int], probas: list[float], threshold: float = 0.5
+) -> tuple[float, float]:
     """精确率/召回率。"""
     try:
         from sklearn.metrics import precision_score, recall_score  # type: ignore
@@ -81,12 +79,12 @@ def compute_precision_recall(
 
 
 def compute_confusion(
-    labels: List[int], probas: List[float], threshold: float = 0.5
+    labels: list[int], probas: list[float], threshold: float = 0.5
 ) -> dict[str, int]:
     """混淆矩阵。"""
     tp = fp = tn = fn = 0
     preds = [1 if p >= threshold else 0 for p in probas]
-    for label, pred in zip(labels, preds):
+    for label, pred in zip(labels, preds, strict=False):
         if label == 1 and pred == 1:
             tp += 1
         elif label == 0 and pred == 1:
@@ -99,7 +97,7 @@ def compute_confusion(
 
 
 def aggregate_metrics(
-    labels: List[int], probas: List[float]
+    labels: list[int], probas: list[float]
 ) -> dict[str, float]:
     """聚合评估指标（AUC/F1/Recall@1%FPR + 混淆矩阵）。"""
     preds = [1 if p >= 0.5 else 0 for p in probas]

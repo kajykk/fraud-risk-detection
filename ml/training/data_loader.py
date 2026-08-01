@@ -10,9 +10,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any
 
 import structlog
 
@@ -23,10 +22,10 @@ logger = structlog.get_logger(__name__)
 class TrainingDataset:
     """训练数据集。"""
 
-    structured: List[dict[str, Any]]
-    texts: List[str]
-    behavior_series: List[List[List[float]]]
-    labels: List[int]
+    structured: list[dict[str, Any]]
+    texts: list[str]
+    behavior_series: list[list[list[float]]]
+    labels: list[int]
     tenant_id: str
     period_start: str
     period_end: str
@@ -37,7 +36,7 @@ class DataLoader:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._pool: Optional[Any] = None
+        self._pool: Any | None = None
 
     async def connect(self) -> None:
         try:
@@ -98,9 +97,9 @@ class DataLoader:
         """
         rows = await self._pool.fetch(sql, tenant_id, period_start, period_end, limit)
         structured = []
-        texts: List[str] = []
-        behavior_series: List[List[List[float]]] = []
-        labels: List[int] = []
+        texts: list[str] = []
+        behavior_series: list[list[list[float]]] = []
+        labels: list[int] = []
         for row in rows:
             features = dict(row["risk_features"] or {})
             features.setdefault("amount", float(row["amount"]))
@@ -129,7 +128,7 @@ class DataLoader:
         )
 
     @staticmethod
-    def _parse_behavior(raw: Any) -> List[List[float]]:
+    def _parse_behavior(raw: Any) -> list[list[float]]:
         if not raw:
             return []
         try:

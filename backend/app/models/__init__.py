@@ -19,6 +19,7 @@ from app.models.pipl import ConsentRecord, DeletionRequest, FairnessReport
 from app.models.rule import Rule, RuleVersion
 from app.models.tenant import ApiKey, Merchant, Tenant
 from app.models.transaction import Score, ShapExplanation, Transaction
+from app.models.user import User
 
 __all__ = [
     "AmlReport",
@@ -40,4 +41,5 @@ __all__ = [
     "ShapExplanation",
     "Tenant",
     "Transaction",
+    "User",
 ]

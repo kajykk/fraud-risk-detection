@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from jose import JWTError, jwt
@@ -42,7 +42,7 @@ def create_access_token(
     extra_claims: dict[str, Any] | None = None,
 ) -> str:
     """生成 access token（短期，默认 30 分钟）。"""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
     payload: dict[str, Any] = {
         "sub": subject,
@@ -61,7 +61,7 @@ def create_access_token(
 
 def create_refresh_token(subject: str, tenant_id: str) -> str:
     """生成 refresh token（长期，默认 7 天）。"""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + timedelta(days=settings.jwt_refresh_token_expire_days)
     payload = {
         "sub": subject,

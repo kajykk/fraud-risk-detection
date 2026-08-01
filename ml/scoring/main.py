@@ -8,9 +8,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, HTTPException
@@ -18,24 +19,24 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .engine import MLScoringEngine, ModalityScores
-from .shap_explainer import ShapExplanation, ShapExplainer
+from .shap_explainer import ShapExplainer, ShapExplanation
 
 logger = structlog.get_logger(__name__)
 
 
-_engine: Optional[MLScoringEngine] = None
-_shap: Optional[ShapExplainer] = None
-_redis: Optional[Any] = None
+_engine: MLScoringEngine | None = None
+_shap: ShapExplainer | None = None
+_redis: Any | None = None
 
 
 class ScoreRequest(BaseModel):
     tenant_id: str = Field(..., description="租户 ID")
     transaction_id: str = Field(..., description="交易 ID")
-    structured_features: Dict[str, Any] = Field(
+    structured_features: dict[str, Any] = Field(
         default_factory=dict, description="结构化特征（金额/时间/商户/设备/历史）"
     )
     text_content: str = Field(default="", description="文本内容（备注/对话）")
-    behavior_series: List[List[float]] = Field(
+    behavior_series: list[list[float]] = Field(
         default_factory=list, description="行为时序序列"
     )
 
@@ -44,15 +45,15 @@ class ScoreResponse(BaseModel):
     transaction_id: str
     risk_score: float
     risk_band: str
-    modality_scores: Dict[str, Any]
+    modality_scores: dict[str, Any]
     latency_ms: float
-    fallback_flags: Dict[str, str]
+    fallback_flags: dict[str, str]
     all_fallback: bool
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI 生命周期：加载模型 + Redis 连接。"""
+    """FastAPI 生命周期：加载模型 + Redis 连接 + 挂载 SHAP。"""
     global _engine, _shap, _redis
     _engine = MLScoringEngine()
     _shap = ShapExplainer()
@@ -69,6 +70,15 @@ async def lifespan(app: FastAPI):
 
     await _engine.load(_redis)
     await _shap.init_redis(_redis)
+
+    # 挂载结构化 XGBoost 模型到 SHAP TreeExplainer（ADR-007）
+    structured_model = getattr(_engine.structured, "_model", None)
+    if structured_model is not None:
+        _shap.attach_tree_model(structured_model, model_version="structured_v1")
+        logger.info("ml.main.shap.tree_explainer.attached")
+    else:
+        logger.warning("ml.main.shap.tree_explainer.skip", reason="structured_model_not_loaded")
+
     logger.info("ml.main.started", port=settings.server.port)
     yield
     if _redis is not None:
@@ -93,7 +103,7 @@ def create_app() -> FastAPI:
             logger.warning("ml.main.prometheus.disabled", error=str(exc))
 
     @app.get("/health")
-    async def health() -> Dict[str, Any]:
+    async def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "service": "ml-scoring",
@@ -111,6 +121,16 @@ def create_app() -> FastAPI:
             behavior_series=req.behavior_series,
             tenant_id=req.tenant_id,
         )
+        # 缓存特征供后续 SHAP 查询（TTL 24h，ADR-007）
+        if _redis is not None:
+            try:
+                await _redis.set(
+                    f"shap:features:{req.transaction_id}",
+                    json.dumps(req.structured_features, default=str),
+                    ex=settings.redis.shap_cache_ttl_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ml.main.features.cache_failed", error=str(exc))
         return ScoreResponse(
             transaction_id=req.transaction_id,
             risk_score=scores.fused_score,
@@ -121,12 +141,52 @@ def create_app() -> FastAPI:
             all_fallback=scores.all_fallback,
         )
 
-    @app.get("/v1/shap/{prediction_id}", response_model=Optional[ShapExplanation])
-    async def shap_explain(prediction_id: str) -> Optional[ShapExplanation]:
-        # 实际场景下应从 DB 反查 features；这里仅占位返回 None
+    @app.get("/v1/shap/{prediction_id}", response_model=ShapExplanation | None)
+    async def shap_explain(prediction_id: str) -> ShapExplanation | None:
+        """查询单笔交易 SHAP 解释（从 Redis 反查特征 + 24h 缓存）。"""
         if _shap is None:
             raise HTTPException(status_code=503, detail="shap_not_loaded")
-        return None
+
+        # 反查评分时缓存的交易特征
+        if _redis is None:
+            return None
+        try:
+            raw = await _redis.get(f"shap:features:{prediction_id}")
+            if not raw:
+                return None
+            features: dict[str, Any] = json.loads(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ml.main.shap.features_missing", prediction_id=prediction_id, error=str(exc))
+            return None
+
+        # 按模型 feature_names 顺序构造特征向量
+        feature_vector: list[float] | None = None
+        feature_names: list[str] | None = None
+        model = getattr(_engine, "structured", None)
+        if model is not None:
+            names = getattr(model, "_feature_names", None)
+            if names:
+                feature_names = list(names)
+                feature_vector = []
+                for name in feature_names:
+                    try:
+                        feature_vector.append(float(features.get(name, 0.0)))
+                    except (TypeError, ValueError):
+                        feature_vector.append(0.0)
+            else:
+                # 无 feature_names：按 dict 键序
+                feature_names = list(features.keys())
+                try:
+                    feature_vector = [float(v) for v in features.values()]
+                except (TypeError, ValueError):
+                    feature_vector = None
+
+        return await _shap.explain(
+            prediction_id=prediction_id,
+            features=features,
+            feature_vector=feature_vector,
+            feature_names=feature_names,
+        )
 
     return app
 

@@ -9,10 +9,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 import structlog
 
@@ -29,8 +28,8 @@ class ModalityScore:
     modality: str
     latency_ms: float
     fallback: bool = False
-    label: Optional[str] = None
-    extra: Optional[Dict[str, Any]] = None
+    label: str | None = None
+    extra: dict[str, Any] | None = None
 
 
 class StructuredModality:
@@ -43,11 +42,11 @@ class StructuredModality:
     name = "structured"
 
     def __init__(self) -> None:
-        self._model: Optional[Any] = None  # xgboost.Booster
-        self._feature_names: Optional[list[str]] = None
-        self._redis: Optional[Any] = None
+        self._model: Any | None = None  # xgboost.Booster
+        self._feature_names: list[str] | None = None
+        self._redis: Any | None = None
 
-    async def load_model(self, redis_client: Optional[Any] = None) -> None:
+    async def load_model(self, redis_client: Any | None = None) -> None:
         """加载 XGBoost 模型工件。
 
         Args:
@@ -67,7 +66,7 @@ class StructuredModality:
             logger.error("structured.model.load_failed", error=str(exc))
             self._model = None
 
-    async def predict(self, features: Dict[str, Any], tenant_id: str) -> ModalityScore:
+    async def predict(self, features: dict[str, Any], tenant_id: str) -> ModalityScore:
         """同步推理包装为协程，避免阻塞事件循环。
 
         Args:
@@ -97,7 +96,7 @@ class StructuredModality:
             logger.warning("structured.predict.failed", error=str(exc))
             return await self.fallback(tenant_id, reason="predict_exception")
 
-    def _format_features(self, features: Dict[str, Any]) -> list[float]:
+    def _format_features(self, features: dict[str, Any]) -> list[float]:
         """按特征名顺序构造数值向量（缺失补 0）。"""
         if self._feature_names:
             return [float(features.get(name, 0.0)) for name in self._feature_names]

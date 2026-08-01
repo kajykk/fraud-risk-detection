@@ -10,14 +10,18 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import get_tenant_id, require_scope
+from app.core.exceptions import NotFoundError
 from app.schemas.common import ApiResponse
 from app.schemas.transaction import (
     AsyncScoreResponse,
     BatchScoreRequest,
     BatchScoreResponse,
+    BatchScoreResultItem,
     FeedbackRequest,
     TransactionDetail,
     TransactionScoreRequest,
@@ -60,13 +64,22 @@ async def score_async(
     _user: dict = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[AsyncScoreResponse]:
     """异步评分（深度分析，含 GNN 团伙检测）。"""
-    # TODO: 投递 Celery 任务 tasks_scoring.score_async_task
-    import uuid
+    from app.workers.celery_app import celery_app
+    from app.workers.tasks_scoring import score_async as score_async_task
 
-    task_id = f"score_task_{uuid.uuid4()}"
+    tx_dict = req.model_dump(mode="json")
+    if celery_app.conf.task_always_eager:
+        # 内联模式（测试/单机）：本地执行，不投递 broker
+        result = score_async_task.apply(args=[tenant_id, tx_dict])
+    else:
+        result = celery_app.send_task(
+            "scoring.score_async",
+            args=[tenant_id, tx_dict],
+            queue="scoring",
+        )
     return ApiResponse(
         data=AsyncScoreResponse(
-            task_id=task_id,
+            task_id=result.id,
             status="RUNNING",
             estimated_seconds=30,
             callback_event="transaction.analysis_completed",
@@ -80,8 +93,26 @@ async def get_score_task(
     _user: dict = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[dict]:
     """查询异步评分任务状态。"""
-    # TODO: 查 Celery result backend
-    return ApiResponse(data={"task_id": task_id, "status": "RUNNING"})
+    from app.workers.celery_app import celery_app
+
+    result = celery_app.AsyncResult(task_id)
+    if result.state == "PENDING":
+        status = "PENDING"
+    elif result.state == "STARTED":
+        status = "RUNNING"
+    elif result.state in ("SUCCESS",):
+        status = "COMPLETED"
+    elif result.state == "FAILURE":
+        status = "FAILED"
+    else:
+        status = result.state
+
+    payload: dict = {"task_id": task_id, "status": status}
+    if result.successful() and isinstance(result.result, dict):
+        payload.update(result.result)
+    elif result.failed() and isinstance(result.result, BaseException):
+        payload["error"] = str(result.result)
+    return ApiResponse(data=payload)
 
 
 @router.post("/score/batch", response_model=ApiResponse[BatchScoreResponse])
@@ -90,18 +121,68 @@ async def score_batch(
     tenant_id: str = Depends(get_tenant_id),
     _user: dict = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[BatchScoreResponse]:
-    """批量评分（最多 100 条/批）。"""
-    # TODO: 并发调用 score_sync
-    return ApiResponse(data=BatchScoreResponse(results=[], success_count=0, failure_count=0))
+    """批量评分（最多 100 条/批，并发执行）。"""
+    from app.schemas.common import Decision, RiskBand
+
+    async def _score_one(tx: dict) -> BatchScoreResultItem:
+        try:
+            result = await scoring_orchestrator.score_sync(tx, tenant_id)
+            return BatchScoreResultItem(
+                external_tx_id=tx["external_tx_id"],
+                decision=result.decision,
+                risk_score=result.risk_score,
+                risk_band=result.risk_band,
+            )
+        except Exception as exc:
+            return BatchScoreResultItem(
+                external_tx_id=tx["external_tx_id"],
+                decision=Decision.DENY,
+                risk_score=0.0,
+                risk_band=RiskBand.CRITICAL,
+                error=str(exc),
+            )
+
+    tx_list = [t.model_dump(mode="json") for t in req.transactions]
+    results = await asyncio.gather(*[_score_one(tx) for tx in tx_list])
+    success_count = sum(1 for r in results if r.error is None)
+    return ApiResponse(
+        data=BatchScoreResponse(
+            results=results,
+            success_count=success_count,
+            failure_count=len(results) - success_count,
+        )
+    )
 
 
 @router.post("/feedback", response_model=ApiResponse[dict])
 async def feedback(
     req: FeedbackRequest,
+    tenant_id: str = Depends(get_tenant_id),
     _user: dict = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[dict]:
     """反馈真实欺诈标签（用于模型再训练）。"""
-    # TODO: 写入 transactions.is_fraud 标签
+    from sqlalchemy import select
+
+    from app.db.session import session_scope
+    from app.models.transaction import Transaction
+
+    async with session_scope(tenant_id) as session:
+        result = await session.execute(
+            select(Transaction).where(
+                Transaction.tenant_id == tenant_id,
+                Transaction.external_tx_id == req.external_tx_id,
+            )
+        )
+        tx = result.scalar_one_or_none()
+        if tx is None:
+            raise NotFoundError(f"transaction not found: {req.external_tx_id}")
+        features = dict(tx.risk_features or {})
+        features["is_fraud"] = req.label
+        features["label_source"] = req.label_source
+        features["labeled_at"] = req.labeled_at.isoformat()
+        if req.evidence:
+            features["label_evidence"] = req.evidence
+        tx.risk_features = features
     return ApiResponse(data={"status": "accepted", "external_tx_id": req.external_tx_id})
 
 
@@ -116,13 +197,12 @@ async def list_transactions(
     page_size: int = 20,
 ) -> ApiResponse[dict]:
     """交易列表查询（D05 §5.3）。"""
-    from sqlalchemy import select, func, desc
+    from sqlalchemy import desc, func, select
 
-    from app.db.session import get_session_factory
+    from app.db.session import session_scope
     from app.models.transaction import Score, Transaction
 
-    factory = get_session_factory()
-    async with factory() as session:
+    async with session_scope(tenant_id) as session:
         # 构建基础查询：transactions JOIN scores
         base = (
             select(Transaction, Score)
@@ -203,11 +283,10 @@ async def get_transaction(
     """查询交易评分详情。"""
     from sqlalchemy import select
 
-    from app.db.session import get_session_factory
+    from app.db.session import session_scope
     from app.models.transaction import Score, Transaction
 
-    factory = get_session_factory()
-    async with factory() as session:
+    async with session_scope(tenant_id) as session:
         result = await session.execute(
             select(Transaction, Score)
             .outerjoin(Score, Score.transaction_id == Transaction.id)

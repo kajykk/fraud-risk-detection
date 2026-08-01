@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -31,17 +31,20 @@ class TextModality:
     name = "text"
 
     def __init__(self) -> None:
-        self._tokenizer: Optional[Any] = None
-        self._model: Optional[Any] = None
-        self._device: Optional[Any] = None
-        self._redis: Optional[Any] = None
+        self._tokenizer: Any | None = None
+        self._model: Any | None = None
+        self._device: Any | None = None
+        self._redis: Any | None = None
 
-    async def load_model(self, redis_client: Optional[Any] = None) -> None:
+    async def load_model(self, redis_client: Any | None = None) -> None:
         """加载 BERT tokenizer + model。"""
         self._redis = redis_client
         try:
             import torch  # type: ignore
-            from transformers import AutoModelForSequenceClassification, AutoTokenizer  # type: ignore
+            from transformers import (  # type: ignore
+                AutoModelForSequenceClassification,
+                AutoTokenizer,
+            )
 
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             path = settings.models.text_path
@@ -74,7 +77,7 @@ class TextModality:
                 latency_ms=latency_ms,
                 label="fraud_proba",
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return await self.fallback(tenant_id, reason="timeout")
         except Exception as exc:  # noqa: BLE001
             logger.warning("text.predict.failed", error=str(exc))

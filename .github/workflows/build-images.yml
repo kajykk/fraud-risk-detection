@@ -41,11 +41,11 @@ jobs:
             context: ./frontend
             dockerfile: ./frontend/Dockerfile
           - image: frd-ml-serving
-            context: ./services/ml-serving
-            dockerfile: ./services/ml-serving/Dockerfile
+            context: ./ml
+            dockerfile: ./ml/Dockerfile
           - image: frd-gnn-serving
-            context: ./services/gnn-serving
-            dockerfile: ./services/gnn-serving/Dockerfile
+            context: ./gnn
+            dockerfile: ./gnn/Dockerfile
     steps:
       - uses: actions/checkout@v4
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -35,7 +34,7 @@ class FusionConfig:
     """三模态融合配置（ADR-011 §4.3）。"""
 
     # D03 §4.3 默认权重：struct 0.6 / text 0.2 / behavior 0.2
-    weights: Dict[str, float] = field(
+    weights: dict[str, float] = field(
         default_factory=lambda: {
             "structured": 0.6,
             "text": 0.2,
@@ -45,7 +44,7 @@ class FusionConfig:
     # 熔断模态权重降到此值后，其余模态按比例放大
     fallback_weight: float = 0.05
     # 风险等级阈值（baseline §3.5）
-    band_thresholds: Dict[str, float] = field(
+    band_thresholds: dict[str, float] = field(
         default_factory=lambda: {
             "LOW": 0.30,
             "MEDIUM": 0.60,

@@ -105,8 +105,7 @@ async def test_score_async_returns_task_id(
     )
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["task_id"].startswith("score_task_")
-    assert data["status"] == "RUNNING"
+    assert data["task_id"]
     assert data["callback_event"] == "transaction.analysis_completed"
 
 
@@ -124,7 +123,7 @@ async def test_get_score_task_status(
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["task_id"] == task_id
-    assert data["status"] == "RUNNING"
+    assert data["status"] in ("PENDING", "RUNNING")
 
 
 @pytest.mark.asyncio

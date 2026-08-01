@@ -4,9 +4,8 @@
 调用 POST /api/v1/transactions/score 接口评分并持久化。
 """
 import asyncio
-import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -47,7 +46,7 @@ async def main():
         headers = {"Authorization": f"Bearer {token}"}
 
         # 2. 逐笔评分
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         results = []
         for tx in TRANSACTIONS:
             body = {

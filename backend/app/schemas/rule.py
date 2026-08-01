@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.common import RuleAction, RuleStatus
+from app.schemas.common import RuleStatus
 
 
 class RuleCreate(BaseModel):

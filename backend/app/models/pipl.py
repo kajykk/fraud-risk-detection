@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import CheckConstraint, DateTime, Integer, Numeric, String, Text
@@ -15,6 +15,10 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TenantMixin
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class ConsentRecord(Base, PKMixin, TenantMixin):
@@ -42,7 +46,7 @@ class ConsentRecord(Base, PKMixin, TenantMixin):
     # legal_basis: CONSENT / CONTRACT / LEGAL_OBLIGATION
     legal_basis: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 
@@ -61,7 +65,7 @@ class DeletionRequest(Base, PKMixin, TenantMixin):
     # status: PENDING / PROCESSING / COMPLETED / REJECTED
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -71,7 +75,7 @@ class DeletionRequest(Base, PKMixin, TenantMixin):
     # verification_method: ID_CARD / PHONE_OTP / EMAIL_OTP / FACE
     verification_method: Mapped[str] = mapped_column(String(30), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 
@@ -101,10 +105,10 @@ class FairnessReport(Base, PKMixin, TenantMixin):
     # status: PASS / FAIL / REVIEW
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
     __table_args__ = (

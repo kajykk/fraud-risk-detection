@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import DateTime, Integer, Numeric, String, Text
@@ -14,6 +14,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TenantMixin
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class ModelVersion(Base, PKMixin, TenantMixin):
@@ -49,7 +53,7 @@ class ModelVersion(Base, PKMixin, TenantMixin):
     )
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 
@@ -71,13 +75,13 @@ class DriftAlert(Base, PKMixin, TenantMixin):
     # severity: LOW / MEDIUM / HIGH / CRITICAL
     severity: Mapped[str] = mapped_column(String(20), nullable=False)
     detected_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 

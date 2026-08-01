@@ -24,7 +24,6 @@ from typing import Any
 
 from app.config import settings
 from app.core.logging import get_logger
-from app.services.kill_switch import KillSwitchScope, kill_switch
 
 logger = get_logger(__name__)
 
@@ -135,7 +134,7 @@ class MLScoringEngine:
                 fallback_used=False,
                 latency_ms=int((time.perf_counter() - start) * 1000),
             )
-        except (asyncio.TimeoutError, Exception) as exc:
+        except (TimeoutError, Exception) as exc:
             logger.warning(
                 "modality_fallback_triggered",
                 modality=modality,

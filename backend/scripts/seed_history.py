@@ -3,10 +3,10 @@
 为过去 7 天每天插入 20-40 笔交易 + 评分记录，制造真实趋势数据。
 """
 import asyncio
-import uuid
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 import random
+import uuid
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from app.db.session import get_session_factory
 from app.models.transaction import Score, Transaction
@@ -44,7 +44,7 @@ async def seed():
         total_scores = 0
 
         for day_offset in range(7, 0, -1):
-            day = datetime.now(timezone.utc) - timedelta(days=day_offset)
+            day = datetime.now(UTC) - timedelta(days=day_offset)
             plan = DAILY_PLAN[7 - day_offset]
 
             for i in range(plan["count"]):

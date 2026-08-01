@@ -11,8 +11,8 @@ from app.schemas.model_version import (
     ModelOut,
     ModelPromoteRequest,
     ModelRegisterRequest,
-    ModelRollbackRequest,
     ModelRetireRequest,
+    ModelRollbackRequest,
 )
 from app.schemas.pipl import (
     ConsentCreate,

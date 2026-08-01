@@ -8,13 +8,17 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TenantMixin
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class Rule(Base, PKMixin, TenantMixin):
@@ -42,10 +46,10 @@ class Rule(Base, PKMixin, TenantMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     current_version: Mapped[str] = mapped_column(String(20), nullable=False, default="v1")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 
@@ -65,7 +69,7 @@ class RuleVersion(Base, PKMixin, TenantMixin):
     canary_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     promoted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

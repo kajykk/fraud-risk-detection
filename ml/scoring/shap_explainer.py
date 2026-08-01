@@ -15,7 +15,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import structlog
 
@@ -38,7 +38,7 @@ class ShapExplanation:
     """SHAP Top5 解释结果。"""
 
     prediction_id: str
-    factors: List[ShapFactor]
+    factors: list[ShapFactor]
     base_value: float
     output_value: float
     model_version: str
@@ -56,9 +56,9 @@ class ShapExplainer:
     """
 
     def __init__(self) -> None:
-        self._redis: Optional[Any] = None
-        self._tree_explainer: Optional[Any] = None  # shap.TreeExplainer
-        self._deep_explainer: Optional[Any] = None  # shap.DeepExplainer
+        self._redis: Any | None = None
+        self._tree_explainer: Any | None = None  # shap.TreeExplainer
+        self._deep_explainer: Any | None = None  # shap.DeepExplainer
         self._model_version: str = "v1.0.0"
 
     async def init_redis(self, redis_client: Any) -> None:
@@ -91,10 +91,10 @@ class ShapExplainer:
     async def explain(
         self,
         prediction_id: str,
-        features: Dict[str, Any],
-        feature_vector: Optional[List[float]] = None,
-        feature_names: Optional[List[str]] = None,
-    ) -> Optional[ShapExplanation]:
+        features: dict[str, Any],
+        feature_vector: list[float] | None = None,
+        feature_names: list[str] | None = None,
+    ) -> ShapExplanation | None:
         """计算 Top5 SHAP 因子（异步执行，先查缓存）。"""
         cache_key = self._cache_key(prediction_id, features)
         cached = await self._read_cache(cache_key)
@@ -142,9 +142,9 @@ class ShapExplainer:
 
     def _explain_tree_sync(
         self,
-        feature_vector: List[float],
-        feature_names: Optional[List[str]] = None,
-    ) -> tuple[List[ShapFactor], float, float]:
+        feature_vector: list[float],
+        feature_names: list[str] | None = None,
+    ) -> tuple[list[ShapFactor], float, float]:
         """同步 TreeExplainer 计算（在 thread executor 中执行）。"""
         import numpy as np  # type: ignore
 
@@ -168,12 +168,12 @@ class ShapExplainer:
         factors.sort(key=lambda f: abs(f.shap_value), reverse=True)
         return factors, base_value, output_value
 
-    def _cache_key(self, prediction_id: str, features: Dict[str, Any]) -> str:
+    def _cache_key(self, prediction_id: str, features: dict[str, Any]) -> str:
         payload = json.dumps({"pid": prediction_id, "f": features}, sort_keys=True, default=str)
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
         return f"shap:{self._model_version}:{digest}"
 
-    async def _read_cache(self, key: str) -> Optional[ShapExplanation]:
+    async def _read_cache(self, key: str) -> ShapExplanation | None:
         if self._redis is None:
             return None
         try:

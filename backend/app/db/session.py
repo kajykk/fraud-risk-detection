@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
+import uuid as uuidlib
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -73,8 +74,12 @@ async def close_engine() -> None:
 
 
 async def set_tenant_id(session: AsyncSession, tenant_id: str) -> None:
-    """在当前连接上 SET LOCAL app.tenant_id（ADR-015 RLS 强制隔离）。"""
-    await session.execute(text("SET LOCAL app.tenant_id = :tid"), {"tid": str(tenant_id)})
+    """在当前连接上 SET LOCAL app.tenant_id（ADR-015 RLS 强制隔离）。
+
+    注意：asyncpg 不支持 SET 语句绑定参数，必须先校验 UUID 格式再内联。
+    """
+    uuidlib.UUID(str(tenant_id))  # 校验格式，防止 SQL 注入
+    await session.execute(text(f"SET LOCAL app.tenant_id = '{tenant_id}'"))
 
 
 async def reset_tenant_id(session: AsyncSession) -> None:

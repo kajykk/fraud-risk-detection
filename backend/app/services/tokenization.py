@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
 
 from app.config import settings
 from app.core.logging import get_logger

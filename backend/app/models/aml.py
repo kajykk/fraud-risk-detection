@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, Numeric, String, Text
@@ -14,6 +14,10 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, PKMixin, TenantMixin
+
+
+def _utcnow():
+    return datetime.now(UTC)
 
 
 class AmlReport(Base, PKMixin, TenantMixin):
@@ -43,7 +47,7 @@ class AmlReport(Base, PKMixin, TenantMixin):
     submitted_to: Mapped[str | None] = mapped_column(String(50), nullable=True)
     submission_receipt: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 
@@ -63,10 +67,10 @@ class SanctionScreening(Base, PKMixin, TenantMixin):
     # status: PENDING / CLEARED / BLOCKED
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     screened_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 

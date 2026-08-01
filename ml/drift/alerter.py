@@ -14,10 +14,9 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -38,7 +37,7 @@ class DriftAlertRecord:
     threshold: float
     severity: str
     detected_at: datetime
-    resolved_at: Optional[datetime] = None
+    resolved_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,7 +58,7 @@ class DriftAlerter:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._pool: Optional[Any] = None
+        self._pool: Any | None = None
 
     async def connect(self) -> None:
         try:
@@ -81,7 +80,7 @@ class DriftAlerter:
         model_version: str,
         modality: str,
         result: DriftResult,
-    ) -> Optional[str]:
+    ) -> str | None:
         """写入 drift_alerts 表（仅在 is_drifted=True 时）。"""
         if not result.is_drifted:
             return None
@@ -96,7 +95,7 @@ class DriftAlerter:
             metric_value=result.value,
             threshold=result.threshold,
             severity=result.severity,
-            detected_at=datetime.now(timezone.utc),
+            detected_at=datetime.now(UTC),
         )
         sql = """
             INSERT INTO drift_alerts (

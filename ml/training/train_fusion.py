@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
 
 import structlog
 
@@ -28,10 +27,10 @@ class FusionTrainResult:
 
 
 def train(
-    structured_scores: List[float],
-    text_scores: List[float],
-    behavior_scores: List[float],
-    labels: List[int],
+    structured_scores: list[float],
+    text_scores: list[float],
+    behavior_scores: list[float],
+    labels: list[int],
     save_path: str,
 ) -> FusionTrainResult:
     """训练 Stacking 元学习器（基于三模态分数输入）。

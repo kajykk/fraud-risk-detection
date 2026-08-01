@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
-from .data_loader import DataLoader, TrainingDataset
+from .data_loader import DataLoader
 from .feature_store import FeatureStore
 from .register import (
     ModelRegistration,
@@ -55,7 +55,7 @@ class TrainingPipeline:
         self,
         pg_dsn: str,
         config: PipelineConfig,
-        feature_store: Optional[FeatureStore] = None,
+        feature_store: FeatureStore | None = None,
     ) -> None:
         self._pg_dsn = pg_dsn
         self.config = config
@@ -98,10 +98,11 @@ class TrainingPipeline:
 
             # 融合层训练（用三模态在训练集上的预测分数作为 Stacking 输入）
             # 此处简化：直接复用各模态评估指标作为占位
+            s_metrics, t_metrics, b_metrics = s_result.metrics, t_result.metrics, b_result.metrics
             f_result = train_fusion(
-                structured_scores=[s.metrics.get("auc", 0.5)] * len(dataset.labels),
-                text_scores=[t.metrics.get("auc", 0.5)] * len(dataset.labels),
-                behavior_scores=[b.metrics.get("auc", 0.5)] * len(dataset.labels),
+                structured_scores=[s_metrics.get("auc", 0.5)] * len(dataset.labels),
+                text_scores=[t_metrics.get("auc", 0.5)] * len(dataset.labels),
+                behavior_scores=[b_metrics.get("auc", 0.5)] * len(dataset.labels),
                 labels=dataset.labels,
                 save_path=self.config.fusion_path,
             )

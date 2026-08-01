@@ -25,6 +25,8 @@ import time
 import uuid
 from typing import Any
 
+import httpx
+
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -53,7 +55,7 @@ class WebhookService:
             timestamp = int(time.time())
         if isinstance(body, str):
             body = body.encode("utf-8")
-        signature_string = f"{timestamp}.".encode("utf-8") + body
+        signature_string = f"{timestamp}.".encode() + body
         hmac_hex = hmac.new(
             secret.encode("utf-8"),
             signature_string,
@@ -79,7 +81,7 @@ class WebhookService:
             body = body.encode("utf-8")
         expected = hmac.new(
             secret.encode("utf-8"),
-            f"{t}.".encode("utf-8") + body,
+            f"{t}.".encode() + body,
             hashlib.sha256,
         ).hexdigest()
         return hmac.compare_digest(expected, v1)
@@ -107,7 +109,7 @@ class WebhookService:
             "delivery_attempt": 1,
             "data": data,
         }
-        body = json.dumps(body_dict).encode("utf-8")
+        body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
         timestamp = int(time.time())
         signature_header = self.sign(webhook_secret, body, timestamp)
 
@@ -115,38 +117,32 @@ class WebhookService:
         for attempt_no in range(1, MAX_ATTEMPTS + 1):
             sent_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             try:
-                # TODO: 使用 httpx 异步投递
-                # response = await httpx.AsyncClient().post(
-                #     webhook_url,
-                #     content=body,
-                #     headers={
-                #         "X-FRD-Signature": signature_header,
-                #         "X-FRD-Timestamp": str(timestamp),
-                #         "Content-Type": "application/json",
-                #     },
-                #     timeout=10.0,
-                # )
-                # 骨架：模拟投递
-                logger.info(
-                    "webhook_deliver_skeleton",
-                    delivery_id=delivery_id,
-                    attempt_no=attempt_no,
-                    webhook_url=webhook_url,
-                    note="TODO: integrate httpx.AsyncClient",
-                )
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        webhook_url,
+                        content=body,
+                        headers={
+                            "X-FRD-Signature": signature_header,
+                            "X-FRD-Timestamp": str(timestamp),
+                            "Content-Type": "application/json",
+                        },
+                    )
+                if response.status_code >= 500 and attempt_no < MAX_ATTEMPTS:
+                    raise RuntimeError(f"upstream error: {response.status_code}")
                 attempts.append({
                     "attempt_no": attempt_no,
                     "sent_at": sent_at,
-                    "response_code": 200,
-                    "latency_ms": 50,
+                    "response_code": response.status_code,
+                    "latency_ms": response.elapsed.total_seconds() * 1000,
                     "next_retry_at": None,
                 })
-                return {
-                    "delivery_id": delivery_id,
-                    "status": "SUCCESS",
-                    "attempts": attempts,
-                    "delivered_at": sent_at,
-                }
+                if response.status_code < 500:
+                    return {
+                        "delivery_id": delivery_id,
+                        "status": "SUCCESS",
+                        "attempts": attempts,
+                        "delivered_at": sent_at,
+                    }
             except Exception as exc:
                 logger.warning(
                     "webhook_deliver_failed",
@@ -154,20 +150,20 @@ class WebhookService:
                     attempt_no=attempt_no,
                     error=str(exc),
                 )
-                next_interval = RETRY_INTERVALS[attempt_no] if attempt_no < MAX_ATTEMPTS else None
-                next_retry_at = (
-                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + next_interval))
-                    if next_interval
-                    else None
-                )
-                attempts.append({
-                    "attempt_no": attempt_no,
-                    "sent_at": sent_at,
-                    "response_code": None,
-                    "next_retry_at": next_retry_at,
-                })
-                if attempt_no < MAX_ATTEMPTS:
-                    await asyncio.sleep(0)  # 实际应使用 Celery 延时任务
+            next_interval = RETRY_INTERVALS[attempt_no] if attempt_no < MAX_ATTEMPTS else None
+            next_retry_at = (
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + next_interval))
+                if next_interval
+                else None
+            )
+            attempts.append({
+                "attempt_no": attempt_no,
+                "sent_at": sent_at,
+                "response_code": None,
+                "next_retry_at": next_retry_at,
+            })
+            if attempt_no < MAX_ATTEMPTS:
+                await asyncio.sleep(0)  # 实际应使用 Celery 延时任务
 
         # 入死信队列
         dead_lettered_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

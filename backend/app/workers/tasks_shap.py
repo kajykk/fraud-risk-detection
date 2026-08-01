@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from celery import Task
@@ -23,6 +24,9 @@ from celery.utils.log import get_task_logger
 
 from app.config import settings
 from app.core.logging import configure_logging
+from app.db.sync_session import sync_session_scope
+from app.models.transaction import ShapExplanation
+from app.services.shap_provider import generate_shap_factors
 from app.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
@@ -75,30 +79,44 @@ def compute_shap(
     )
 
     try:
-        # TODO: 加载模型 + 计算 SHAP
-        # from shap import TreeExplainer
-        # explainer = TreeExplainer(model)
-        # shap_values = explainer.shap_values(feature_matrix)
-        # top5_indices = np.argsort(np.abs(shap_values))[-5:][::-1]
+        # 基于交易特征生成 SHAP 因子（规则式 provider，与同步路径一致）
+        risk_score = float(feature_values.get("risk_score", 0.5))
+        shap_data = generate_shap_factors(feature_values, risk_score)
 
-        # 骨架：生成占位结果
         factors = [
-            {"feature": k, "value": v, "shap_value": 0.0, "contribution": 0.0}
-            for k, v in list(feature_values.items())[:5]
+            {"feature": f["name"], "value": f["value"], "shap_value": f["shap"], "contribution": round(f["shap"], 4)}
+            for f in shap_data["features"]
         ]
         result = {
             "shap_task_id": f"shap_task_{uuid.uuid4()}",
             "decision_id": decision_id,
             "score_id": score_id,
             "factors": factors,
-            "base_value": 0.5,
-            "output_value": 0.5,
+            "base_value": shap_data["base_value"],
+            "output_value": shap_data["prediction"],
             "model_version": model_version,
             "status": "READY",
         }
 
+        # 写入 shap_explanations 表
+        try:
+            with sync_session_scope(tenant_id) as session:
+                session.add(
+                    ShapExplanation(
+                        tenant_id=uuid.UUID(tenant_id),
+                        score_id=uuid.UUID(score_id),
+                        factors=factors,
+                        base_value=shap_data["base_value"],
+                        output_value=shap_data["prediction"],
+                        model_version=model_version,
+                        expires_at=datetime.now(UTC)
+                        + timedelta(hours=settings.scoring_shap_cache_hours),
+                    )
+                )
+        except Exception as exc:
+            logger.warning("shap_db_write_failed", error=str(exc))
+
         # 写入 Redis 缓存（TTL 24h）
-        # NOTE: Celery worker 是同步模型，使用 asyncio.run 创建临时事件循环
         asyncio.run(_cache_shap_result(tenant_id, decision_id, result))
 
         # 发布 WebSocket 事件
@@ -119,7 +137,7 @@ def compute_shap(
             decision_id=decision_id,
             error=str(exc),
         )
-        raise self.retry(exc=exc, countdown=10 * (self.request.retries + 1))
+        raise self.retry(exc=exc, countdown=10 * (self.request.retries + 1)) from exc
 
 
 @celery_app.task(
@@ -136,8 +154,35 @@ def cache_cleanup(self: ShapTask) -> dict[str, Any]:
     此任务作为兜底，扫描并删除无 TTL 的孤儿 key。
     """
     logger.info("shap_cache_cleanup_begin")
-    # TODO: SCAN shap_cache:* 并检查 TTL，删除无 TTL 的孤儿 key
-    return {"status": "COMPLETED", "note": "TODO: implement cache cleanup"}
+    deleted = 0
+    try:
+        import asyncio
+
+        deleted = asyncio.run(_cleanup_orphan_keys())
+    except Exception as exc:
+        logger.error("shap_cache_cleanup_failed", error=str(exc))
+        return {"status": "FAILED", "error": str(exc)}
+    logger.info("shap_cache_cleanup_complete", deleted=deleted)
+    return {"status": "COMPLETED", "deleted": deleted}
+
+
+async def _cleanup_orphan_keys() -> int:
+    """扫描 shap_cache:* 并删除无 TTL 的孤儿 key。"""
+    from app.db.redis import get_redis
+
+    redis = get_redis()
+    deleted = 0
+    cursor = 0
+    while True:
+        cursor, keys = await redis.scan(cursor=cursor, match="shap_cache:*", count=200)
+        for key in keys:
+            ttl = await redis.ttl(key)
+            if ttl == -1:  # 无 TTL 的孤儿 key
+                await redis.delete(key)
+                deleted += 1
+        if cursor == 0:
+            break
+    return deleted
 
 
 async def _cache_shap_result(
@@ -158,10 +203,7 @@ async def _cache_shap_result(
 
 
 async def _publish_shap_ready_event(tenant_id: str, decision_id: str) -> None:
-    """发布 WebSocket 事件 transaction.shap_ready（D05 §2.8）。
-
-    通过 Redis pubsub 广播到所有 API 实例，由 WebSocket 端点推送给客户端。
-    """
+    """发布 WebSocket 事件 transaction.shap_ready（D05 §2.8）。"""
     try:
         from app.db.redis import get_redis
 

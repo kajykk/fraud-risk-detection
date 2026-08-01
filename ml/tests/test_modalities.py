@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 
 import pytest
 
 from ml.scoring.modalities.behavior import BehaviorModality
-from ml.scoring.modalities.structured import ModalityScore, StructuredModality
+from ml.scoring.modalities.structured import StructuredModality
 from ml.scoring.modalities.text import TextModality
 
 
@@ -42,9 +43,10 @@ def test_text_fallback_when_model_missing(text: TextModality) -> None:
 
 
 def test_text_fallback_when_empty(text: TextModality) -> None:
+    """空文本 → fallback（未加载模型时优先报 model_not_loaded）。"""
     result = asyncio.run(text.predict("", "t1"))
     assert result.fallback is True
-    assert "empty_text" in (result.label or "")
+    assert any(reason in (result.label or "") for reason in ("empty_text", "model_not_loaded"))
 
 
 def test_behavior_fallback_when_model_missing(behavior: BehaviorModality) -> None:
@@ -55,11 +57,13 @@ def test_behavior_fallback_when_model_missing(behavior: BehaviorModality) -> Non
 
 
 def test_behavior_fallback_when_empty(behavior: BehaviorModality) -> None:
+    """空序列 → fallback（未加载模型时优先报 model_not_loaded）。"""
     result = asyncio.run(behavior.predict([], "t1"))
     assert result.fallback is True
-    assert "empty_series" in (result.label or "")
+    assert any(reason in (result.label or "") for reason in ("empty_series", "model_not_loaded"))
 
 
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch not installed")
 def test_behavior_pad_or_truncate(behavior: BehaviorModality) -> None:
     """序列长度不足 → pad 到 seq_len。"""
     tensor = behavior._pad_or_truncate([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]])

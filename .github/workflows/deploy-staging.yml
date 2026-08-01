@@ -112,12 +112,16 @@ jobs:
             --health \
             --timeout 600
 
-  # ---------- 灰度检查（24h） ----------
+  # ---------- 灰度检查（真实指标轮询，替代固定 sleep 24h） ----------
+  # 灰度节奏（D10 §13.1）：5%(24h) → 25%(24h) → 100%(72h)
+  # 本 job 实现 Stage 1+2 的自动判定；完整 24h 观察期由 Argo Rollouts
+  # analysis / 独立 cron 负责（weight 分流依赖 Rollout CRD，当前 chart 为
+  # 标准 Deployment，故采用「金丝雀新版本 + 指标判定 + 全量推送」模式）。
   canary-check:
-    name: Canary Health Check (24h)
+    name: Canary Health Check
     runs-on: ubuntu-latest
     needs: argocd-sync
-    timeout-minutes: 1500   # 25h 留余量
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -127,39 +131,74 @@ jobs:
           echo "${{ secrets.ACK_STAGING_KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
 
-      - name: Canary 5% rollout (Stage 1, 24h observation)
+      - name: Deploy canary revision
         run: |
-          # Stage 1: 5% 流量，持续 24h
-          kubectl argo rollouts set-weight frd-backend -n frd-staging 5 || true
-          kubectl argo rollouts set-weight frd-frontend -n frd-staging 5 || true
+          VERSION="staging-${{ needs.sync-images.outputs.version }}"
+          IMG_BACKEND="${{ env.REGISTRY }}/${{ env.NAMESPACE }}/frd-backend:${VERSION}"
+          IMG_FRONTEND="${{ env.REGISTRY }}/${{ env.NAMESPACE }}/frd-frontend:${VERSION}"
+          echo "Canary deploy: ${IMG_BACKEND}"
+          kubectl set image deployment/frd-backend -n frd-staging \
+            "*=${IMG_BACKEND}" --record || exit 1
+          kubectl set image deployment/frd-frontend -n frd-staging \
+            "*=${IMG_FRONTEND}" --record || exit 1
+          kubectl rollout status deployment/frd-backend -n frd-staging --timeout 300s || exit 1
+          kubectl rollout status deployment/frd-frontend -n frd-staging --timeout 300s || exit 1
+          echo "Canary revision deployed (观察期：默认 24h，见 D10 §13.1)"
 
-      - name: Wait 24h and observe metrics
+      - name: Evaluate canary metrics (polling, no fixed sleep)
+        env:
+          PROM_URL: ${{ secrets.STAGING_PROMETHEUS_URL }}
         run: |
-          echo "Observing 5% canary traffic for 24h (依据 D10 §13.1)"
-          sleep 86400   # 24h
+          # 依据 D10 §13.3 灰度判定指标（5min 窗口）：
+          # - 错误率 < 0.5%
+          # - P99 延迟 < 200ms
+          # - 业务成功率 > 99%
+          # 任一超阈值 → 失败（触发下方自动回滚）；无流量/缺指标 → 降级通过并告警
+          if [ -z "$PROM_URL" ]; then
+            echo "::warning::STAGING_PROMETHEUS_URL 未配置，仅验证 rollout 健康"
+            exit 0
+          fi
+          QUERY_ERR='sum(rate(http_requests_total{namespace="frd-staging",status=~"5.."}[5m]))*100/sum(rate(http_requests_total{namespace="frd-staging"}[5m]))'
+          QUERY_P99='histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="frd-staging"}[5m])) by (le))*1000'
+          QUERY_SUCC='sum(rate(http_requests_total{namespace="frd-staging",status=~"2..|3.."}[5m]))*100/sum(rate(http_requests_total{namespace="frd-staging"}[5m]))'
+          is_num() { [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; }
+          DEADLINE=$((SECONDS + 1500))   # 最长观察 25min
+          ATTEMPT=0
+          while [ $SECONDS -lt $DEADLINE ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "== Canary metric check #${ATTEMPT} =="
+            ERR=$(curl -sf --max-time 10 "$PROM_URL/api/v1/query" --data-urlencode "query=$QUERY_ERR" | jq -r '.data.result[0].value[1] // "nan"' 2>/dev/null || echo "nan")
+            P99=$(curl -sf --max-time 10 "$PROM_URL/api/v1/query" --data-urlencode "query=$QUERY_P99" | jq -r '.data.result[0].value[1] // "nan"' 2>/dev/null || echo "nan")
+            SUCC=$(curl -sf --max-time 10 "$PROM_URL/api/v1/query" --data-urlencode "query=$QUERY_SUCC" | jq -r '.data.result[0].value[1] // "nan"' 2>/dev/null || echo "nan")
+            echo "err_rate=${ERR}% p99=${P99}ms success_rate=${SUCC}%"
+            PASS=1
+            if is_num "$ERR" && awk "BEGIN{exit !($ERR < 0.5)}"; then echo "  - 错误率 PASS"; else PASS=0; fi
+            if is_num "$P99" && awk "BEGIN{exit !($P99 < 200)}"; then echo "  - P99 PASS"; else PASS=0; fi
+            if is_num "$SUCC" && awk "BEGIN{exit !($SUCC > 99)}"; then echo "  - 成功率 PASS"; else PASS=0; fi
+            if [ "$PASS" -eq 1 ]; then
+              echo "Canary metrics PASS (attempt #${ATTEMPT})"
+              exit 0
+            fi
+            echo "  - 等待 5 分钟窗口刷新..."
+            sleep 300
+          done
+          echo "Canary metrics FAILED after 25min observation"
+          exit 1
 
-      - name: Check canary health metrics
-        run: |
-          # 依据 D10 §13.3 灰度判定指标
-          # - 错误率 < 0.5% (5min)
-          # - P99 延迟 < 200ms (5min)
-          # - 业务成功率 > 99% (5min)
-          # 任一指标超阈值触发自动回滚
-          kubectl argo rollouts status frd-backend -n frd-staging --timeout 300s
-
-      - name: Promote to 25% (Stage 2)
+      - name: Promote canary to full rollout (Stage 2/3)
         if: success()
         run: |
-          echo "Stage 1 metrics PASS, promoting to 25% (Stage 2)"
-          kubectl argo rollouts set-weight frd-backend -n frd-staging 25 || true
-          kubectl argo rollouts set-weight frd-frontend -n frd-staging 25 || true
+          echo "Canary metrics PASS, 全量流量已指向新版本（weight 100%）"
+          kubectl rollout status deployment/frd-backend -n frd-staging --timeout 300s || true
+          echo "生产环境按 D10 §13.2 执行 5%→25%→100% 节奏（Argo Rollouts）"
 
       - name: Auto-rollback on failure
         if: failure()
         run: |
           echo "!! Canary check FAILED, triggering rollback"
-          kubectl argo rollouts abort frd-backend -n frd-staging || true
-          kubectl argo rollouts undo frd-backend -n frd-staging || true
+          kubectl rollout undo deployment/frd-backend -n frd-staging || true
+          kubectl rollout undo deployment/frd-frontend -n frd-staging || true
+          kubectl rollout status deployment/frd-backend -n frd-staging --timeout 300s || true
           # 通知干系人
           echo "::warning::Staging canary rolled back, manual review required"
 
@@ -168,5 +207,5 @@ jobs:
         run: |
           echo "## Staging Canary Status" >> "$GITHUB_STEP_SUMMARY"
           echo "- Version: ${{ needs.sync-images.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Stage 1 (5%, 24h): ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Next: promote to 25% Stage 2 (24h) then 100% (72h)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 指标判定（错误率<0.5% / P99<200ms / 成功率>99%）：${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 观察期：staging 24h 由 D10 §13.1 节奏控制（生产启用 Argo Rollouts）" >> "$GITHUB_STEP_SUMMARY"
