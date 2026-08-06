@@ -61,10 +61,34 @@ def score_async(
     )
     try:
         import asyncio
+        import threading
 
         from app.services.scoring import scoring_orchestrator
 
-        result = asyncio.run(scoring_orchestrator.score_sync(transaction, tenant_id))
+        async def _run() -> Any:
+            return await scoring_orchestrator.score_sync(transaction, tenant_id)
+
+        # Celery 同步任务上下文通常无事件循环；eager 模式（测试）可能已处于
+        # 运行中的 loop（asyncio.run 会抛 RuntimeError 且丢弃协程），
+        # 此时在独立线程中启动专属 loop 执行。
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if in_loop:
+            box: dict[str, Any] = {}
+
+            def _runner() -> None:
+                box["result"] = asyncio.run(_run())
+
+            worker_thread = threading.Thread(target=_runner, name="score_async_runner")
+            worker_thread.start()
+            worker_thread.join()
+            result = box["result"]
+        else:
+            result = asyncio.run(_run())
         logger.info(
             "score_async_complete",
             tenant_id=tenant_id,
@@ -297,8 +321,10 @@ def generate_case(
 def drift_check(self: LoggedTask) -> dict[str, Any]:
     """模型漂移检测（每小时定时，D03 §4.5）。
 
-    计算最近 1h 评分分布 vs 最近 7d（不含 1h）参考分布的 PSI，
-    结果写入 drift_alerts 表；PSI ≥ 0.25（CRITICAL）触发 L2 模型级 Kill Switch。
+    按租户迭代（tenants 注册表，RLS 隔离各租户数据）：
+    最近 1h 评分分布 vs 最近 7d（不含 1h）参考分布的 PSI，
+    结果写入各租户自己的 drift_alerts 表；
+    PSI ≥ 0.25（CRITICAL）触发 L2 模型级 Kill Switch（全局熔断）。
     """
     logger.info("drift_check_begin")
     now = datetime.now(UTC)
@@ -307,64 +333,85 @@ def drift_check(self: LoggedTask) -> dict[str, Any]:
 
     alert_counts: dict[str, Any] = {"checked": 0, "drifted": 0, "critical": 0}
     try:
-        # 遍历所有模型（含全局，按 model_version 聚合）
+        # tenants 表无 RLS（租户注册表），可全局枚举
+        from app.models.tenant import Tenant
+
         with sync_session_scope() as session:
-            versions = session.execute(
-                select(ModelVersion.version).distinct()
-            ).scalars().all()
+            tenant_ids = session.execute(select(Tenant.id)).scalars().all()
 
-        for model_version in versions:
+        for tenant_id in tenant_ids:
+            tenant_str = str(tenant_id)
             try:
-                with sync_session_scope() as session:
-                    current = session.execute(
-                        select(Score.risk_score).where(
-                            Score.model_version == model_version,
-                            Score.created_at >= hour_ago,
-                        )
+                with sync_session_scope(tenant_str) as session:
+                    versions = session.execute(
+                        select(ModelVersion.version).distinct()
                     ).scalars().all()
-                    reference = session.execute(
-                        select(Score.risk_score).where(
-                            Score.model_version == model_version,
-                            Score.created_at >= week_ago,
-                            Score.created_at < hour_ago,
+            except Exception as exc:
+                logger.error(
+                    "drift_check_tenant_failed",
+                    tenant_id=tenant_str,
+                    error=str(exc),
+                )
+                continue
+
+            for model_version in versions:
+                try:
+                    with sync_session_scope(tenant_str) as session:
+                        current = session.execute(
+                            select(Score.risk_score).where(
+                                Score.model_version == model_version,
+                                Score.created_at >= hour_ago,
+                            )
+                        ).scalars().all()
+                        reference = session.execute(
+                            select(Score.risk_score).where(
+                                Score.model_version == model_version,
+                                Score.created_at >= week_ago,
+                                Score.created_at < hour_ago,
+                            )
+                        ).scalars().all()
+
+                    if len(current) < 30 or len(reference) < 100:
+                        continue  # 样本不足跳过
+
+                    psi = compute_psi([float(s) for s in current], [float(s) for s in reference])
+                    severity, is_drifted = classify_severity(psi)
+                    alert_counts["checked"] += 1
+                    if is_drifted:
+                        alert_counts["drifted"] += 1
+                    if severity == "CRITICAL":
+                        alert_counts["critical"] += 1
+
+                    with sync_session_scope(tenant_str) as session:
+                        session.add(
+                            DriftAlert(
+                                tenant_id=uuid.UUID(tenant_str),
+                                model_version=model_version,
+                                modality="fused",
+                                metric_type="PSI",
+                                metric_value=Decimal(str(round(psi, 4))),
+                                threshold=Decimal("0.1"),
+                                severity=severity,
+                                detected_at=now,
+                            )
                         )
-                    ).scalars().all()
 
-                if len(current) < 30 or len(reference) < 100:
-                    continue  # 样本不足跳过
-
-                psi = compute_psi([float(s) for s in current], [float(s) for s in reference])
-                severity, is_drifted = classify_severity(psi)
-                alert_counts["checked"] += 1
-                if is_drifted:
-                    alert_counts["drifted"] += 1
-                if severity == "CRITICAL":
-                    alert_counts["critical"] += 1
-
-                with sync_session_scope() as session:
-                    session.add(
-                        DriftAlert(
-                            tenant_id=None,
-                            model_version=model_version,
-                            modality="fused",
-                            metric_type="PSI",
-                            metric_value=Decimal(str(round(psi, 4))),
-                            threshold=Decimal("0.1"),
-                            severity=severity,
-                            detected_at=now,
-                        )
+                    logger.info(
+                        "drift_check_model",
+                        tenant_id=tenant_str,
+                        model_version=model_version,
+                        psi=round(psi, 4),
+                        severity=severity,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "drift_check_model_failed",
+                        tenant_id=tenant_str,
+                        model_version=model_version,
+                        error=str(exc),
                     )
 
-                logger.info(
-                    "drift_check_model",
-                    model_version=model_version,
-                    psi=round(psi, 4),
-                    severity=severity,
-                )
-            except Exception as exc:
-                logger.error("drift_check_model_failed", model_version=model_version, error=str(exc))
-
-        # PSI ≥ 0.25（CRITICAL）→ L2 模型级 Kill Switch（ADR-013）
+        # PSI ≥ 0.25（CRITICAL）→ L2 模型级 Kill Switch（ADR-013，全局熔断）
         if alert_counts["critical"] > 0:
             # Celery 同步上下文：创建临时事件循环调用异步 kill_switch
             import asyncio
@@ -394,51 +441,71 @@ def drift_check(self: LoggedTask) -> dict[str, Any]:
     queue="scoring",
 )
 def psi_report(self: LoggedTask) -> dict[str, Any]:
-    """PSI 7d 报表生成（每天 02:00 定时，D03 §4.5）。"""
+    """PSI 7d 报表生成（每天 02:00 定时，D03 §4.5）。
+
+    按租户迭代（RLS 隔离），报告写入各租户自己的 drift_alerts 表。
+    """
     logger.info("psi_report_begin")
     now = datetime.now(UTC)
     week_ago = now - timedelta(days=7)
 
     reports: list[dict[str, Any]] = []
     try:
-        with sync_session_scope() as session:
-            versions = session.execute(
-                select(ModelVersion.version).distinct()
-            ).scalars().all()
+        from app.models.tenant import Tenant
 
-        for model_version in versions:
-            with sync_session_scope() as session:
-                scores = session.execute(
-                    select(Score.risk_score).where(
-                        Score.model_version == model_version,
-                        Score.created_at >= week_ago,
-                    )
-                ).scalars().all()
-            if len(scores) < 100:
-                continue
-            avg_score = sum(float(s) for s in scores) / len(scores)
-            high_ratio = sum(1 for s in scores if float(s) >= 0.6) / len(scores)
-            reports.append(
-                {
-                    "model_version": model_version,
-                    "sample_count": len(scores),
-                    "avg_risk_score": round(avg_score, 4),
-                    "high_risk_ratio": round(high_ratio, 4),
-                    "period": f"{week_ago.isoformat()}/{now.isoformat()}",
-                }
-            )
-            session.add(
-                DriftAlert(
-                    tenant_id=None,
-                    model_version=model_version,
-                    modality="fused",
-                    metric_type="PSI",
-                    metric_value=Decimal(str(round(high_ratio, 4))),
-                    threshold=Decimal("0.1"),
-                    severity="LOW",
-                    detected_at=now,
+        with sync_session_scope() as session:
+            tenant_ids = session.execute(select(Tenant.id)).scalars().all()
+
+        for tenant_id in tenant_ids:
+            tenant_str = str(tenant_id)
+            try:
+                with sync_session_scope(tenant_str) as session:
+                    versions = session.execute(
+                        select(ModelVersion.version).distinct()
+                    ).scalars().all()
+            except Exception as exc:
+                logger.error(
+                    "psi_report_tenant_failed",
+                    tenant_id=tenant_str,
+                    error=str(exc),
                 )
-            )
+                continue
+
+            for model_version in versions:
+                with sync_session_scope(tenant_str) as session:
+                    scores = session.execute(
+                        select(Score.risk_score).where(
+                            Score.model_version == model_version,
+                            Score.created_at >= week_ago,
+                        )
+                    ).scalars().all()
+                if len(scores) < 100:
+                    continue
+                avg_score = sum(float(s) for s in scores) / len(scores)
+                high_ratio = sum(1 for s in scores if float(s) >= 0.6) / len(scores)
+                reports.append(
+                    {
+                        "tenant_id": tenant_str,
+                        "model_version": model_version,
+                        "sample_count": len(scores),
+                        "avg_risk_score": round(avg_score, 4),
+                        "high_risk_ratio": round(high_ratio, 4),
+                        "period": f"{week_ago.isoformat()}/{now.isoformat()}",
+                    }
+                )
+                with sync_session_scope(tenant_str) as session:
+                    session.add(
+                        DriftAlert(
+                            tenant_id=uuid.UUID(tenant_str),
+                            model_version=model_version,
+                            modality="fused",
+                            metric_type="PSI",
+                            metric_value=Decimal(str(round(high_ratio, 4))),
+                            threshold=Decimal("0.1"),
+                            severity="LOW",
+                            detected_at=now,
+                        )
+                    )
     except Exception as exc:
         logger.error("psi_report_failed", error=str(exc))
         return {"status": "FAILED", "error": str(exc)}

@@ -15,7 +15,8 @@ import asyncio
 from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import get_tenant_id, require_scope
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, UnauthorizedError
+from app.core.logging import get_logger
 from app.schemas.common import ApiResponse
 from app.schemas.transaction import (
     AsyncScoreResponse,
@@ -30,6 +31,34 @@ from app.schemas.transaction import (
 from app.services.scoring import scoring_orchestrator
 
 router = APIRouter()
+logger = get_logger(__name__)
+
+
+async def _record_task_owner(task_id: str, tenant_id: str) -> None:
+    """记录异步任务归属（score_task:{task_id} -> tenant_id，TTL 1h）。"""
+    try:
+        from app.db.redis import get_redis
+
+        await get_redis().set(f"score_task:{task_id}", tenant_id, ex=3600)
+    except Exception as exc:  # fail-open：Redis 故障不影响评分主链路
+        logger.warning("score_task_owner_record_skipped", error=str(exc))
+
+
+async def _task_belongs_to_tenant(task_id: str, tenant_id: str) -> bool:
+    """校验任务归属租户。
+
+    Redis 不可用时 fail-open（放行），与平台既有降级策略一致。
+    """
+    try:
+        from app.db.redis import get_redis
+
+        owner = await get_redis().get(f"score_task:{task_id}")
+        if owner is None:
+            return True
+        return owner == tenant_id
+    except Exception as exc:  # fail-open：Redis 故障不阻塞任务查询
+        logger.warning("score_task_owner_check_skipped", error=str(exc))
+        return True
 
 
 @router.post("/score", response_model=ApiResponse[TransactionScoreResponse])
@@ -77,6 +106,7 @@ async def score_async(
             args=[tenant_id, tx_dict],
             queue="scoring",
         )
+    await _record_task_owner(result.id, tenant_id)
     return ApiResponse(
         data=AsyncScoreResponse(
             task_id=result.id,
@@ -90,9 +120,12 @@ async def score_async(
 @router.get("/score/tasks/{task_id}", response_model=ApiResponse[dict])
 async def get_score_task(
     task_id: str,
+    tenant_id: str = Depends(get_tenant_id),
     _user: dict = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[dict]:
-    """查询异步评分任务状态。"""
+    """查询异步评分任务状态（限定属于当前租户的任务）。"""
+    if not await _task_belongs_to_tenant(task_id, tenant_id):
+        raise UnauthorizedError("task not found or not owned by this tenant")
     from app.workers.celery_app import celery_app
 
     result = celery_app.AsyncResult(task_id)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,15 @@ class Rule(Base, PKMixin, TenantMixin):
     """
 
     __tablename__ = "rules"
+    __table_args__ = (
+        Index(
+            "uq_rules_tenant_rule_id",
+            "tenant_id",
+            "rule_id",
+            unique=True,
+            postgresql_where=text("tenant_id IS NOT NULL"),
+        ),
+    )
 
     # 覆盖 TenantMixin 的 tenant_id 为可空（全局规则）
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(  # type: ignore[assignment]

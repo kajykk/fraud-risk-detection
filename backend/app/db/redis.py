@@ -44,9 +44,21 @@ async def close_redis() -> None:
 
 
 def get_redis() -> Redis:
-    """返回 Redis 客户端单例（必须在 init_redis 之后调用）。"""
+    """返回 Redis 客户端单例；未初始化时惰性初始化。
+
+    惰性初始化覆盖 Celery Worker / 后台线程等未调用 init_redis 的进程，
+    避免 RuntimeError 导致任务失败（Kill Switch、SHAP 缓存、审计序列号等）。
+    显式调用 init_redis() 可提前建立连接池以便启动自检。
+    """
+    global _redis
     if _redis is None:
-        raise RuntimeError("Redis not initialized; call init_redis() first")
+        _redis = from_url(
+            settings.url,
+            encoding="utf-8",
+            decode_responses=True,
+            max_connections=50,
+        )
+        logger.info("redis_lazy_initialized", host=settings.redis_host, port=settings.redis_port)
     return _redis
 
 

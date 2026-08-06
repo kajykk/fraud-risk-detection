@@ -1,10 +1,9 @@
 """AuditMiddleware：记录访问日志到 audit_logs（D03 §4.1 / D04 §3.7）。
 
 设计要点：
-- 异步 fire-and-forget，不阻塞主路径（< 1ms）
-- 仅记录写操作（POST/PUT/PATCH/DELETE）与敏感读（GET /governance/audit-log）
-- 审计日志走 Kafka topic frd.audit_log（ADR-014）；Kafka 不可用时降级到 Redis 队列
-- sequence_no 由 Redis INCR 预分配（key: audit_seq:{tenant_id}，D04 §3.7）
+- 仅记录写操作（POST/PUT/PATCH/DELETE）
+- 哈希链：sequence_no（Redis INCR，降级 DB MAX）+ sha256 链，落库 audit_logs
+- 审计写入失败仅记日志，不阻塞业务主路径
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ AUDITED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 class AuditMiddleware(BaseHTTPMiddleware):
-    """记录写操作到审计日志（异步 fire-and-forget）。"""
+    """记录写操作到审计日志（哈希链落库）。"""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         method = request.method
@@ -46,33 +45,59 @@ class AuditMiddleware(BaseHTTPMiddleware):
         return response  # type: ignore[return-value]
 
     async def _emit_audit_log(self, request: Request, response: Response | None, duration_ms: int) -> None:
-        """发送审计日志事件到 Kafka / Redis 队列（fire-and-forget）。
+        """发送审计日志事件（哈希链落库，失败仅记日志）。"""
+        from app.services.audit import record_audit_event
 
-        TODO（M2 实现）：
-        1. 从 request.state 获取 tenant_id / user_id
-        2. Redis INCR audit_seq:{tenant_id} 得到 sequence_no
-        3. 构造哈希链 current_hash = sha256(prev_hash || canonical_json(payload))
-        4. 发布到 Kafka topic frd.audit_log（ADR-014）
-        5. Kafka Consumer 异步消费写入 audit_logs 表
-        """
         tenant_id = getattr(request.state, "tenant_id", None)
         request_id = getattr(request.state, "request_id", "-")
         user_id = getattr(request.state, "user_id", None)
         status_code = response.status_code if response else 500
 
-        audit_event = {
-            "tenant_id": tenant_id,
-            "user_id": str(user_id) if user_id else None,
-            "ip": request.client.host if request.client else None,
-            "user_agent": request.headers.get("user-agent"),
-            "action": f"{request.method}:{request.url.path}",
-            "resource_type": _infer_resource_type(request.url.path),
-            "status_code": status_code,
-            "duration_ms": duration_ms,
-            "request_id": request_id,
-        }
-        # 骨架阶段：仅 log，不写库不写 Kafka
-        logger.info("audit_event", **audit_event)
+        action = f"{request.method}:{request.url.path}"
+        resource_type = _infer_resource_type(request.url.path)
+        resource_id = _extract_resource_id(request.url.path)
+
+        current_hash = await record_audit_event(
+            tenant_id=str(tenant_id) if tenant_id else "",
+            user_id=user_id,
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            status_code=status_code,
+            request_id=request_id,
+            duration_ms=duration_ms,
+        )
+
+        # 同步结构化日志兜底（审计详情可查），并记录链哈希便于核验
+        logger.info(
+            "audit_event",
+            tenant_id=tenant_id,
+            request_id=request_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            status_code=status_code,
+            duration_ms=duration_ms,
+            audit_hash=current_hash,
+        )
+
+
+def _extract_resource_id(path: str) -> str | None:
+    """从路径提取资源 ID（最后一个非空段，排除 /api/v1/ 与操作词）。"""
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 3:
+        return None
+    candidate = parts[-1]
+    if candidate in {
+        "score", "shap", "status", "result", "comments", "close", "timeline",
+        "promote", "rollback", "versions", "hits", "canary", "retire", "drift",
+        "test", "deliveries", "feedback", "tasks", "community-detection", "login",
+        "token", "refresh", "me", "profile", "related", "embedding",
+    }:
+        candidate = parts[-2] if len(parts) >= 4 else None
+    return candidate
 
 
 def _infer_resource_type(path: str) -> str:

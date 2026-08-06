@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.services.webhook import validate_webhook_secret, validate_webhook_url
 
 
 class WebhookCreate(BaseModel):
@@ -16,14 +18,39 @@ class WebhookCreate(BaseModel):
     secret: str
     challenge_expected: bool = True
 
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str) -> str:
+        return validate_webhook_url(v)
+
+    @field_validator("secret")
+    @classmethod
+    def _check_secret(cls, v: str) -> str:
+        return validate_webhook_secret(v)
+
 
 class WebhookUpdate(BaseModel):
-    """PUT /webhooks/{id} 请求体（D05 §11.4）。"""
+    """PUT /webhooks/{id} 请求体（D05 §11.4）。
+
+    secret 可选：省略时保留原签名密钥（仅改 URL/事件无需重输 secret）。
+    """
 
     url: str
     events: list[str]
-    secret: str
+    secret: str | None = None
     challenge_expected: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str) -> str:
+        return validate_webhook_url(v)
+
+    @field_validator("secret")
+    @classmethod
+    def _check_secret(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return validate_webhook_secret(v)
 
 
 class WebhookOut(BaseModel):

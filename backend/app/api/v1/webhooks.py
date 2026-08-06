@@ -1,9 +1,15 @@
 """Webhook 路由（D05 §11）。
 
-CRUD + /test + /deliveries。
+CRUD + challenge 验证 + /test + /deliveries。
 
 说明：无独立 webhook 表，复用 merchants 表存储 webhook 配置
-（webhook_url / webhook_secret 字段，events/secret_hash/challenge_id 存于 risk_profile）。
+（webhook_url / webhook_secret(加密) 字段，events/secret_hash/challenge_id 存于 risk_profile）。
+
+安全约束：
+- webhook_secret 落库前 Fernet 加密（静态不可读，防 DB 泄露伪造 HMAC）
+- 注册时可选 challenge 回显校验：challenge_expected=True 时目标必须
+  响应 2xx 且回显 challenge_id，否则保持 PENDING_VERIFICATION
+- /test 投递前重新校验 URL（SSRF 纵深防御）
 """
 
 from __future__ import annotations
@@ -31,11 +37,17 @@ from app.schemas.webhook import (
     WebhookTestResponse,
     WebhookUpdate,
 )
-from app.services.webhook import webhook_service
+from app.services.webhook import (
+    decrypt_webhook_secret,
+    encrypt_webhook_secret,
+    validate_webhook_url,
+    webhook_service,
+)
 
 router = APIRouter()
 
 _TEST_DELIVERY_TIMEOUT_SECONDS = 3.0
+_CHALLENGE_TIMEOUT_SECONDS = 3.0
 
 
 def _secret_hash(secret: str) -> str:
@@ -44,13 +56,16 @@ def _secret_hash(secret: str) -> str:
 
 
 def _merchant_to_out(merchant: Merchant) -> WebhookOut:
-    """Merchant ORM → WebhookOut（events/secret_hash/challenge_id 从 risk_profile 读取）。"""
+    """Merchant ORM → WebhookOut（events/status/challenge_id 从 risk_profile 读取）。"""
     risk_profile = merchant.risk_profile or {}
+    status = risk_profile.get("webhook_status")
+    if not status:
+        status = "ACTIVE" if merchant.webhook_url else merchant.status
     return WebhookOut(
         id=str(merchant.id),
         url=merchant.webhook_url or "",
         events=list(risk_profile.get("webhook_events", [])),
-        status="ACTIVE" if merchant.webhook_url else merchant.status,
+        status=status,
         secret_hash=risk_profile.get("secret_hash"),
         created_at=merchant.created_at,
         updated_at=merchant.updated_at,
@@ -74,13 +89,49 @@ async def _load_merchant(session, webhook_id: str, tenant_id: str) -> Merchant:
     return merchant
 
 
+async def _run_challenge(url: str, challenge_id: str) -> bool:
+    """发送 challenge 回调：目标须响应 2xx 且响应体回显 challenge_id。
+
+    通过校验 → True；网络/非 2xx/无回显 → False（保持 PENDING_VERIFICATION）。
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_CHALLENGE_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                url,
+                content=json.dumps({"challenge_id": challenge_id}),
+                headers={"Content-Type": "application/json"},
+            )
+        if response.status_code >= 400:
+            return False
+        body = response.text or ""
+        return challenge_id in body
+    except httpx.HTTPError:
+        return False
+
+
+def _set_pending(merchant: Merchant, risk_profile: dict, challenge_id: str) -> None:
+    """进入待验证状态。"""
+    merchant.status = "PENDING_VERIFICATION"
+    risk_profile["webhook_status"] = "PENDING_VERIFICATION"
+    risk_profile["challenge_id"] = challenge_id
+
+
 @router.post("", response_model=ApiResponse[WebhookOut])
 async def create_webhook(
     req: WebhookCreate,
     tenant_id: str = Depends(get_tenant_id),
     _user: dict = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookOut]:
-    """注册 Webhook（骨架阶段跳过 challenge 验证，直接 ACTIVE）。"""
+    """注册 Webhook。
+
+    challenge_expected=True（默认）：发送 challenge 回调，回显通过才 ACTIVE；
+    否则保持 PENDING_VERIFICATION 直至 POST /{id}/challenge/verify。
+    """
+    challenge_id = f"ch_{uuid.uuid4()}"
+    verified = False
+    if req.challenge_expected:
+        verified = await _run_challenge(req.url, challenge_id)
+
     async with session_scope(tenant_id) as session:
         result = await session.execute(
             select(Merchant)
@@ -96,20 +147,23 @@ async def create_webhook(
                 merchant_no=f"M{int(time.time())}{uuid.uuid4().hex[:6]}",
                 name=f"webhook-{prefix}",
                 webhook_url=req.url,
-                webhook_secret=req.secret,
+                webhook_secret=encrypt_webhook_secret(req.secret),
                 status="ACTIVE",
                 risk_profile={},
             )
             session.add(merchant)
         else:
             merchant.webhook_url = req.url
-            merchant.webhook_secret = req.secret
+            merchant.webhook_secret = encrypt_webhook_secret(req.secret)
             merchant.status = "ACTIVE"
         risk_profile = dict(merchant.risk_profile or {})
         risk_profile["webhook_events"] = list(req.events)
         risk_profile["secret_hash"] = _secret_hash(req.secret)
-        risk_profile["challenge_id"] = f"ch_{uuid.uuid4()}"
-        risk_profile["webhook_status"] = "ACTIVE"
+        if verified or not req.challenge_expected:
+            risk_profile["webhook_status"] = "ACTIVE"
+            risk_profile["challenge_verified_at"] = datetime.now(UTC).isoformat()
+        else:
+            _set_pending(merchant, risk_profile, challenge_id)
         merchant.risk_profile = risk_profile
         await session.flush()
         await session.refresh(merchant)
@@ -168,17 +222,52 @@ async def update_webhook(
     tenant_id: str = Depends(get_tenant_id),
     _user: dict = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookOut]:
-    """更新 Webhook（URL/secret/events，secret 变更时重算 secret_hash）。"""
+    """更新 Webhook（URL/secret 变更时重发 challenge 验证；secret 省略则保留原值）。"""
     async with session_scope(tenant_id) as session:
         merchant = await _load_merchant(session, webhook_id, tenant_id)
         merchant.webhook_url = req.url
-        merchant.webhook_secret = req.secret
-        merchant.status = "ACTIVE"
+        if req.secret is not None:
+            merchant.webhook_secret = encrypt_webhook_secret(req.secret)
+        elif merchant.webhook_secret is None:
+            raise NotFoundError(f"webhook secret not configured: {webhook_id}")
         risk_profile = dict(merchant.risk_profile or {})
         risk_profile["webhook_events"] = list(req.events)
-        risk_profile["secret_hash"] = _secret_hash(req.secret)
-        if "challenge_id" not in risk_profile:
-            risk_profile["challenge_id"] = f"ch_{uuid.uuid4()}"
+        if req.secret is not None:
+            risk_profile["secret_hash"] = _secret_hash(req.secret)
+
+        challenge_id = f"ch_{uuid.uuid4()}"
+        verified = await _run_challenge(req.url, challenge_id)
+        if verified or not req.challenge_expected:
+            merchant.status = "ACTIVE"
+            risk_profile["webhook_status"] = "ACTIVE"
+            risk_profile["challenge_verified_at"] = datetime.now(UTC).isoformat()
+            risk_profile.pop("challenge_id", None)
+        else:
+            _set_pending(merchant, risk_profile, challenge_id)
+        merchant.risk_profile = risk_profile
+        return ApiResponse(data=_merchant_to_out(merchant))
+
+
+@router.post("/{webhook_id}/challenge/verify", response_model=ApiResponse[WebhookOut])
+async def verify_webhook_challenge(
+    webhook_id: str,
+    body: dict,
+    tenant_id: str = Depends(get_tenant_id),
+    _user: dict = Depends(require_scope("webhook:write")),
+) -> ApiResponse[WebhookOut]:
+    """手工验证 challenge（目标未能在注册时回显时，由运维/合规补验证）。"""
+    challenge_id = body.get("challenge_id")
+    if not challenge_id:
+        raise NotFoundError("challenge_id required")
+    async with session_scope(tenant_id) as session:
+        merchant = await _load_merchant(session, webhook_id, tenant_id)
+        risk_profile = dict(merchant.risk_profile or {})
+        if risk_profile.get("challenge_id") != challenge_id:
+            raise NotFoundError("invalid challenge_id")
+        merchant.status = "ACTIVE"
+        risk_profile["webhook_status"] = "ACTIVE"
+        risk_profile["challenge_verified_at"] = datetime.now(UTC).isoformat()
+        risk_profile.pop("challenge_id", None)
         merchant.risk_profile = risk_profile
         return ApiResponse(data=_merchant_to_out(merchant))
 
@@ -216,7 +305,25 @@ async def test_webhook(
         if not merchant.webhook_url or not merchant.webhook_secret:
             raise NotFoundError(f"webhook not configured: {webhook_id}")
         webhook_url = merchant.webhook_url
-        webhook_secret = merchant.webhook_secret
+        decrypted = decrypt_webhook_secret(merchant.webhook_secret)
+        if decrypted is None:
+            raise NotFoundError(f"webhook secret unavailable: {webhook_id}")
+        webhook_secret = decrypted
+
+    # 投递前 SSRF 校验（与 deliver() 对齐，防库中陈旧/被篡改 URL 打内网）
+    try:
+        webhook_url = validate_webhook_url(webhook_url)
+    except ValueError as exc:
+        return ApiResponse(
+            data=WebhookTestResponse(
+                delivery_id=f"dlv_{uuid.uuid4()}",
+                webhook_id=webhook_id,
+                event_type=req.event_type,
+                status="FAILED",
+                signature_header="",
+            ),
+            message=f"url validation failed: {exc}",
+        )
 
     body = json.dumps(
         {

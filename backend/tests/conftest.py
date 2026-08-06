@@ -26,7 +26,23 @@ os.environ.setdefault("NEO4J_URI", "bolt://localhost:7687")
 os.environ.setdefault("PROMETHEUS_ENABLED", "false")
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(autouse=True)
+async def _cleanup_global_resources():
+    """每个测试后释放跨测试共享的异步全局资源（engine / Redis 客户端）。
+
+    pytest-asyncio 每个测试使用独立事件循环，而 app.db.session / app.db.redis
+    为模块级单例连接池。若池内连接跨循环复用，asyncpg 在旧循环的 socket 上
+    ping 会抛 'Event loop is closed' / 'NoneType has no attribute send'。
+    """
+    yield
+    from app.db.redis import close_redis
+    from app.db.session import close_engine
+
+    await close_redis()
+    await close_engine()
+
+
+@pytest.fixture
 def app():
     """返回 FastAPI app 实例（不触发 lifespan，避免连接依赖服务）。"""
     from app.main import create_app

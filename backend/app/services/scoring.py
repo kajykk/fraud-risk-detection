@@ -7,10 +7,9 @@
    └── ML Engine 三模态并行 (30ms + 5ms 融合)
 3. 双轨决策融合 (5ms)
 4. Redis 缓存写入 (3ms)
-5. Kafka 异步发布 fire-and-forget (2ms)
 
-不进主路径：
-- DB 写入：Kafka Consumer 异步消费（ADR-014）
+持久化策略（ADR-014 演进）：
+- DB 写入在主路径内 await（Kafka Consumer 落地前保证数据可追溯）
 - SHAP 计算：异步 Worker + 缓存 24h（ADR-007）
 - 案件生成：异步 Worker
 - Webhook 回调：异步可靠推送
@@ -126,14 +125,14 @@ class ScoringOrchestrator:
             decision_id=decision_id,
         )
 
-        # 5. DB 持久化（fire-and-forget，不阻塞主路径）
-        asyncio.create_task(self._persist_to_db(tenant_id, transaction, result))
+        # 5. DB 持久化（等待完成，保证评分可追溯；失败不阻断响应，内部已 catch）
+        await self._persist_to_db(tenant_id, transaction, result)
 
-        # 6. Redis 缓存写入（fire-and-forget）
-        asyncio.create_task(self._cache_score(tenant_id, transaction.get("external_tx_id", ""), result))
+        # 6. Redis 缓存写入（等待完成；失败降级为仅响应，内部已 catch）
+        await self._cache_score(tenant_id, transaction.get("external_tx_id", ""), result)
 
-        # 7. Kafka 异步发布（fire-and-forget，ADR-014）
-        asyncio.create_task(self._publish_to_kafka(tenant_id, transaction, result))
+        # 7. Kafka 异步发布（ADR-014 骨架阶段仅 log）
+        await self._publish_to_kafka(tenant_id, transaction, result)
 
         logger.info(
             "score_sync_completed",

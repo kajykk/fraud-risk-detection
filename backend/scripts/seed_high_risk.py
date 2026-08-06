@@ -4,6 +4,7 @@
 调用 POST /api/v1/transactions/score 接口评分并持久化。
 """
 import asyncio
+import os
 import uuid
 from datetime import UTC, datetime
 
@@ -11,6 +12,10 @@ import httpx
 
 BASE_URL = "http://127.0.0.1:8000"
 API_PREFIX = "/api/v1"
+
+# 登录凭据通过环境变量注入（与 seed_users 保持一致），禁止硬编码默认口令
+SEED_USER = os.getenv("FRD_ADMIN_USER", "admin").strip() or "admin"
+SEED_PASSWORD = os.environ.get("FRD_ADMIN_PASSWORD", "")
 
 # 10 笔交易，覆盖不同风险等级
 TRANSACTIONS = [
@@ -31,13 +36,17 @@ TRANSACTIONS = [
 
 
 async def main():
+    if len(SEED_PASSWORD) < 12:
+        raise SystemExit(
+            "FRD_ADMIN_PASSWORD 未设置或长度不足 12 位；请先去种用户前的强口令环境再运行。"
+        )
     # 1. 登录获取 token
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=60.0) as client:
         login_resp = await client.post(
             f"{API_PREFIX}/auth/login",
             json={
-                "username": "admin",
-                "password": "test12345",
+                "username": SEED_USER,
+                "password": SEED_PASSWORD,
                 "scopes": ["transaction:score", "transaction:read"],
             },
         )

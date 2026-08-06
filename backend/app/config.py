@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -142,6 +142,8 @@ class GNNConfig(BaseSettings):
     """GNN 服务配置（D05 §7，环境变量 GNN_SERVICE_URL 可覆盖）。"""
 
     gnn_service_url: str = "http://localhost:8502"
+    # GNN 服务间鉴权（与 gnn 服务 GNN_API_KEY 保持一致；为空则不携带）
+    gnn_api_key: str = ""
 
 
 class LLMConfig(BaseSettings):
@@ -193,6 +195,45 @@ class Settings(
     @classmethod
     def _strip_cors(cls, v: str) -> str:
         return v.strip()
+
+    @model_validator(mode="after")
+    def _guard_prod_secrets(self) -> Settings:
+        """生产环境拒绝已知默认/弱密钥，防止漏配环境变量后以公开密钥运行。
+
+        默认值均来自 .env.example / config 默认值（公开仓库可见），
+        prod 使用它们等于无认证、卡号 Token 可解。
+        """
+        if self.app_env != "prod":
+            return self
+        insecure = []
+        for name, value in (
+            ("app_secret_key", self.app_secret_key),
+            ("jwt_secret_key", self.jwt_secret_key),
+            ("postgres_password", self.postgres_password),
+            ("neo4j_password", self.neo4j_password),
+            ("redis_password", self.redis_password),
+            ("tokenization_local_key", self.tokenization_local_key),
+        ):
+            if not value or len(value) < 16:
+                insecure.append(f"{name}(too_short)")
+            elif value.lower() in {
+                "change-me",
+                "change-me-jwt",
+                "change-me-to-a-long-random-string",
+                "change-me-to-a-different-long-random-string",
+                "change-me-32-bytes-hex-key",
+                "frd_dev_password",
+                "frd_neo4j_password",
+                "test12345",
+            }:
+                insecure.append(f"{name}(known_default)")
+        if insecure:
+            raise ValueError(
+                "insecure secrets for prod environment: "
+                + ", ".join(insecure)
+                + "; set strong values via environment variables"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

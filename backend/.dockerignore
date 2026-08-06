@@ -1,0 +1,32 @@
+# Python 构建产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地配置与密钥（容器内不复制）
+.env
+.env.*
+!.env.example
+alembic/*.ini.bak
+
+# 测试与文档不进入镜像
+tests/
+docs/
+*.md
+!README.md
+
+# 本地日志
+*.log
+backend_logs*.txt
+
+# 版本控制
+.git/
+.gitignore
+Dockerfile
+docker-compose*.yml

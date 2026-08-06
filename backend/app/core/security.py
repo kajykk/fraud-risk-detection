@@ -59,11 +59,19 @@ def create_access_token(
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(subject: str, tenant_id: str) -> str:
-    """生成 refresh token（长期，默认 7 天）。"""
+def create_refresh_token(
+    subject: str,
+    tenant_id: str,
+    roles: list[str] | None = None,
+    scopes: list[str] | None = None,
+) -> str:
+    """生成 refresh token（长期，默认 7 天）。
+
+    roles/scopes 写入 claim，供 /auth/refresh 恢复权限（避免刷新后权限丢失）。
+    """
     now = datetime.now(UTC)
     expire = now + timedelta(days=settings.jwt_refresh_token_expire_days)
-    payload = {
+    payload: dict[str, Any] = {
         "sub": subject,
         "tenant_id": tenant_id,
         "type": REFRESH_TOKEN_TYPE,
@@ -71,6 +79,10 @@ def create_refresh_token(subject: str, tenant_id: str) -> str:
         "exp": int(expire.timestamp()),
         "jti": str(uuid.uuid4()),
     }
+    if roles:
+        payload["roles"] = roles
+    if scopes:
+        payload["scope"] = " ".join(scopes)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 

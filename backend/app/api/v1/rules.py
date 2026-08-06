@@ -33,6 +33,7 @@ from app.schemas.rule import (
     RuleVersionCreate,
     RuleVersionOut,
 )
+from app.services.rule_engine import validate_expression
 
 router = APIRouter()
 
@@ -121,14 +122,23 @@ def _version_to_out(rule: Rule, version: RuleVersion) -> RuleVersionOut:
     )
 
 
-async def _load_rule(session, rule_id: str, tenant_id: str) -> Rule:
-    """按业务编号加载规则（含 tenant_id 为空的全局规则），找不到抛 NotFoundError。"""
-    result = await session.execute(
-        select(Rule).where(
-            Rule.rule_id == rule_id,
-            or_(Rule.tenant_id == uuid.UUID(tenant_id), Rule.tenant_id.is_(None)),
+async def _load_rule(
+    session, rule_id: str, tenant_id: str, for_write: bool = False
+) -> Rule:
+    """按业务编号加载规则。
+
+    读路径允许加载全局规则（tenant_id IS NULL，供全租户参考）；
+    写路径（for_write=True）只允许操作本租户规则，禁止修改全局规则，
+    防止普通租户覆盖/删除影响所有租户的规则（H7）。
+    """
+    conditions = [Rule.rule_id == rule_id]
+    if for_write:
+        conditions.append(Rule.tenant_id == uuid.UUID(tenant_id))
+    else:
+        conditions.append(
+            or_(Rule.tenant_id == uuid.UUID(tenant_id), Rule.tenant_id.is_(None))
         )
-    )
+    result = await session.execute(select(Rule).where(*conditions))
     rule = result.scalar_one_or_none()
     if rule is None:
         raise NotFoundError(f"rule not found: {rule_id}")
@@ -186,6 +196,7 @@ async def create_rule(
     _user: dict = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleOut]:
     """新建规则（创建 DRAFT 版本 v1）。"""
+    validate_expression(req.dsl)
     async with session_scope(tenant_id) as session:
         seq = (
             await session.execute(
@@ -242,8 +253,10 @@ async def update_rule(
     _user: dict = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleOut]:
     """更新规则草稿（仅最新版本为 DRAFT 可更新）。"""
+    if req.dsl is not None:
+        validate_expression(req.dsl)
     async with session_scope(tenant_id) as session:
-        rule = await _load_rule(session, rule_id, tenant_id)
+        rule = await _load_rule(session, rule_id, tenant_id, for_write=True)
         version = await _latest_version(session, rule)
         if version is None or version.status != RuleStatus.DRAFT.value:
             raise RuleNotDraftError(f"rule {rule_id} is not in DRAFT status")
@@ -266,7 +279,7 @@ async def delete_rule(
 ) -> None:
     """删除规则（仅最新版本为 DRAFT 可删，物理删除 Rule + RuleVersion）。"""
     async with session_scope(tenant_id) as session:
-        rule = await _load_rule(session, rule_id, tenant_id)
+        rule = await _load_rule(session, rule_id, tenant_id, for_write=True)
         version = await _latest_version(session, rule)
         if version is None or version.status != RuleStatus.DRAFT.value:
             raise RuleNotDeletableError(f"rule {rule_id} is not deletable")
@@ -283,8 +296,9 @@ async def create_version(
     _user: dict = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleVersionOut]:
     """基于当前规则创建新版本草稿（版本号递增）。"""
+    validate_expression(req.dsl)
     async with session_scope(tenant_id) as session:
-        rule = await _load_rule(session, rule_id, tenant_id)
+        rule = await _load_rule(session, rule_id, tenant_id, for_write=True)
         next_version = _next_version(rule.current_version)
         version = RuleVersion(
             tenant_id=uuid.UUID(tenant_id),
@@ -313,7 +327,7 @@ async def promote_rule(
     if not req.approver_id:
         raise ApproverRequiredError("approver required")
     async with session_scope(tenant_id) as session:
-        rule = await _load_rule(session, rule_id, tenant_id)
+        rule = await _load_rule(session, rule_id, tenant_id, for_write=True)
         version = await _latest_version(session, rule)
         if version is None or version.status != req.from_status.value:
             raise RuleStatusTransitionInvalidError(
@@ -352,7 +366,7 @@ async def rollback_rule(
     if not req.approver_id:
         raise ApproverRequiredError("approver required")
     async with session_scope(tenant_id) as session:
-        rule = await _load_rule(session, rule_id, tenant_id)
+        rule = await _load_rule(session, rule_id, tenant_id, for_write=True)
         current = await _latest_version(session, rule)
         if current is None or current.status != RuleStatus.ACTIVE.value:
             raise RuleStatusTransitionInvalidError(f"rule {rule_id} is not ACTIVE")

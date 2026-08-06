@@ -25,6 +25,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.exceptions import RuleDSLInvalidError
 from app.core.logging import get_logger
 from app.db.redis import get_redis
 from app.db.session import get_session_factory, set_tenant_id
@@ -33,6 +34,9 @@ from app.models.rule import Rule, RuleVersion
 logger = get_logger(__name__)
 
 _RULES_CACHE_TTL = 300  # 5 分钟
+
+# 表达式最大括号嵌套深度（防递归下降栈溢出）
+_MAX_PARSE_DEPTH = 64
 
 _TOKEN_RE = re.compile(
     r"\s*(?P<num>-?\d+(?:\.\d+)?)"
@@ -132,33 +136,35 @@ def _parse_expression(dsl: str) -> _Expr:
     def peek() -> tuple[str, str] | None:
         return tokens[pos] if pos < len(tokens) else None
 
-    def parse_or() -> _Expr:
+    def parse_or(depth: int = 0) -> _Expr:
         nonlocal pos
-        left = parse_and()
+        left = parse_and(depth)
         while peek() == ("op", "||"):
             pos += 1
-            right = parse_and()
+            right = parse_and(depth)
             parts = left.parts if isinstance(left, _OrExpr) else [left]
             parts.append(right)
             left = _OrExpr(parts)
         return left
 
-    def parse_and() -> _Expr:
+    def parse_and(depth: int = 0) -> _Expr:
         nonlocal pos
-        left = parse_cmp()
+        left = parse_cmp(depth)
         while peek() == ("op", "&&"):
             pos += 1
-            right = parse_cmp()
+            right = parse_cmp(depth)
             parts = left.parts if isinstance(left, _AndExpr) else [left]
             parts.append(right)
             left = _AndExpr(parts)
         return left
 
-    def parse_cmp() -> _Expr:
+    def parse_cmp(depth: int = 0) -> _Expr:
         nonlocal pos
+        if depth > _MAX_PARSE_DEPTH:
+            raise _DslSyntaxError(f"expression nesting too deep (max {_MAX_PARSE_DEPTH})")
         if peek() == ("op", "("):
             pos += 1
-            inner = parse_or()
+            inner = parse_or(depth + 1)
             if peek() != ("op", ")"):
                 raise _DslSyntaxError("missing closing parenthesis")
             pos += 1
@@ -202,6 +208,9 @@ def _tokenize(dsl: str) -> list[tuple[str, str]]:
     tokens: list[tuple[str, str]] = []
     idx = 0
     while idx < len(dsl):
+        # 尾随空白（含 \n）应被容忍，而非当作非法字符
+        if dsl[idx:].isspace():
+            break
         match = _TOKEN_RE.match(dsl, idx)
         if match is None:
             raise _DslSyntaxError(f"unexpected character at offset {idx}")
@@ -210,6 +219,18 @@ def _tokenize(dsl: str) -> list[tuple[str, str]]:
         tokens.append((kind, match.group(kind)))
         idx = match.end()
     return tokens
+
+
+def validate_expression(dsl: str) -> None:
+    """校验 DSL 语法（供规则创建/更新接口在入库前调用）。
+
+    校验失败抛 RuleDSLInvalidError（含具体原因），避免坏规则入库后
+    在运行时拖垮整个租户的规则引擎。
+    """
+    try:
+        _parse_expression(dsl)
+    except _DslSyntaxError as exc:
+        raise RuleDSLInvalidError(f"invalid rule expression: {exc}") from exc
 
 
 class CompiledRule:
@@ -322,7 +343,18 @@ class RuleEngine:
         rules = await self._load_rules_from_store(tenant_id)
         compiled: list[CompiledRule] = []
         for rule in rules:
-            expr = _parse_expression(rule["expression"])
+            try:
+                expr = _parse_expression(rule["expression"])
+            except _DslSyntaxError as exc:
+                # 单条坏规则隔离：跳过并告警，避免拖垮整个租户的规则引擎
+                # （fail-closed 兜底见 evaluate：坏规则不参与决策）
+                logger.error(
+                    "rule_compile_failed",
+                    tenant_id=tenant_id,
+                    rule_id=rule["rule_id"],
+                    error=str(exc),
+                )
+                continue
             compiled.append(
                 CompiledRule(
                     rule_id=rule["rule_id"],
