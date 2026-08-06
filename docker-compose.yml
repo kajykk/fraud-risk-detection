@@ -3,6 +3,7 @@
 # 使用：docker compose up -d
 # 停止：docker compose down
 # 清理数据：docker compose down -v
+# 凭据：一律由 .env 注入；以下服务使用 ${VAR:?} 强制要求，未设置则拒绝启动。
 # ============================================================
 
 services:
@@ -14,7 +15,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-frd}
       POSTGRES_USER: ${POSTGRES_USER:-frd}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frd_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       TS_TUNE_MEMORY: 2GB
       TS_TUNE_NUM_CPUS: 4
     ports:
@@ -36,16 +37,19 @@ services:
     container_name: frd-redis
     restart: unless-stopped
     command: >
-      redis-server
+      sh -c 'exec redis-server
+      --requirepass "$$REDIS_PASSWORD"
       --maxmemory 512mb
       --maxmemory-policy allkeys-lru
-      --appendonly yes
+      --appendonly yes'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     ports:
       - "6380:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -58,7 +62,7 @@ services:
     container_name: frd-neo4j
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-frd_neo4j_password}
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_memory_heap_max__size: 1G
       NEO4J_dbms_memory_pagecache_size: 512M
@@ -94,7 +98,9 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
-      GNN_SERVICE_URL: http://gnn:8502
+      GNN_SERVICE_URL: http://gnn-serving:8502
+      # 服务间鉴权（与 gnn-serving/ml-serving 的 GNN_API_KEY/ML_API_KEY 保持一致；空则关闭）
+      GNN_API_KEY: ${GNN_API_KEY:-}
     ports:
       - "8002:8000"
     depends_on:
@@ -176,6 +182,7 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      ML_API_KEY: ${ML_API_KEY:-}
     ports:
       - "8501:8501"
     depends_on:
@@ -194,7 +201,8 @@ services:
     environment:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frd_neo4j_password}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      GNN_API_KEY: ${GNN_API_KEY:-}
     ports:
       - "8502:8502"
     depends_on:
@@ -240,7 +248,8 @@ services:
     container_name: frd-grafana
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
     ports:
       - "3001:3000"

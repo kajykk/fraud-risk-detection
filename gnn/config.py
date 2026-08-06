@@ -68,6 +68,9 @@ class ServerConfig:
     enable_prometheus: bool = field(
         default_factory=lambda: _env_bool("GNN_ENABLE_PROMETHEUS", True)
     )
+    # 服务间鉴权 API Key（backend 通过 X-Api-Key 透传，须与 GNN_API_KEY 一致；
+    # 未配置时鉴权关闭并告警，生产必须配置）
+    api_key: str = field(default_factory=lambda: os.getenv("GNN_API_KEY", ""))
 
 
 @dataclass(frozen=True)

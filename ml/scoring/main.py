@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -22,6 +23,20 @@ from .engine import MLScoringEngine, ModalityScores
 from .shap_explainer import ShapExplainer, ShapExplanation
 
 logger = structlog.get_logger(__name__)
+
+
+async def require_api_key(
+    x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
+) -> None:
+    """服务间鉴权：X-Api-Key 须与 ML_API_KEY 一致（恒定时间比较）。
+
+    未配置 ML_API_KEY 时鉴权关闭（仅开发/本地；生产必须配置）。
+    """
+    expected = settings.server.api_key
+    if not expected:
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, expected):
+        raise HTTPException(status_code=401, detail="invalid_api_key")
 
 
 _engine: MLScoringEngine | None = None
@@ -111,7 +126,7 @@ def create_app() -> FastAPI:
             "engine_loaded": _engine is not None,
         }
 
-    @app.post("/v1/score", response_model=ScoreResponse)
+    @app.post("/v1/score", response_model=ScoreResponse, dependencies=[Depends(require_api_key)])
     async def score(req: ScoreRequest) -> ScoreResponse:
         if _engine is None:
             raise HTTPException(status_code=503, detail="engine_not_loaded")
@@ -141,7 +156,7 @@ def create_app() -> FastAPI:
             all_fallback=scores.all_fallback,
         )
 
-    @app.get("/v1/shap/{prediction_id}", response_model=ShapExplanation | None)
+    @app.get("/v1/shap/{prediction_id}", response_model=ShapExplanation | None, dependencies=[Depends(require_api_key)])
     async def shap_explain(prediction_id: str) -> ShapExplanation | None:
         """查询单笔交易 SHAP 解释（从 Redis 反查特征 + 24h 缓存）。"""
         if _shap is None:

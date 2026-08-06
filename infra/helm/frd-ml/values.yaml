@@ -21,6 +21,12 @@ image:
 imagePullSecrets:
   - name: aliyun-acr-secret
 
+# ---------- 服务账号 ----------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
 # ---------- ML 推理 Deployment ----------
 ml:
   replicaCount: 2   # 任务参数：ML 推理 replicas=2（GPU 节点）
@@ -118,12 +124,12 @@ ml:
     # 监控
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.frd-monitoring.svc.cluster.local:4317"
 
+  # 敏感配置：禁止默认占位值，启用时通过 --set / values 覆盖注入真实密钥；
+  # 生产建议预先创建 Secret 后引用 existingSecret，避免密钥写入 chart 仓库。
   secret:
-    enabled: true
-    data:
-      LLM_API_KEY: "CHANGE_ME"
-      LLM_FALLBACK_API_KEY: "CHANGE_ME"
-      MODEL_REGISTRY_TOKEN: "CHANGE_ME"
+    enabled: false          # 置 true 并注入 data 或使用 existingSecret
+    existingSecret: ""      # 复用外部 Secret 的名称（优先于 data）
+    data: {}
 
   affinity:
     podAntiAffinity:
@@ -211,9 +217,9 @@ gnn:
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.frd-monitoring.svc.cluster.local:4317"
 
   secret:
-    enabled: true
-    data:
-      NEO4J_PASSWORD: "CHANGE_ME"
+    enabled: false          # 置 true 并注入 data 或使用 existingSecret
+    existingSecret: ""      # 复用外部 Secret 的名称（优先于 data）
+    data: {}
 
   affinity:
     podAntiAffinity:

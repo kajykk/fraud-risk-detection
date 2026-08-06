@@ -54,3 +54,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "frd-ml.image-gnn" -}}
 {{- printf "%s/%s/%s:%s" .Values.image.registry .Values.image.namespace .Values.image.gnnRepository .Values.image.tag -}}
 {{- end -}}
+
+{{- define "frd-ml.serviceAccountName" -}}
+{{- if .Values.serviceAccount.name -}}
+{{- .Values.serviceAccount.name -}}
+{{- else -}}
+{{- printf "%s-sa" (include "frd-ml.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}

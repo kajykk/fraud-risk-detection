@@ -41,13 +41,15 @@ class Graph:
 
 
 # Cypher：k 跳关联节点 + 边查询（D04 §2.2 节点 + 关系类型）
+# 注意：不能直接 collect(DISTINCT rs)（rs 是每条路径的关系列表，会按列表去重，
+# 导致边集合为空）；先 UNWIND 节点与关系，再分别按对象去重。
 K_HOP_QUERY = """
 MATCH path = (n)-[*1..$k_hops]-(m)
 WHERE n.id = $node_id AND n.tenant_id = $tenant_id
-WITH nodes(path) AS ns, relationships(path) AS rs
-UNWIND ns AS node
+UNWIND nodes(path) AS node
+UNWIND relationships(path) AS rel
 WITH collect(DISTINCT {id: node.id, labels: labels(node), props: properties(node)}) AS nodes,
-     collect(DISTINCT rs) AS rels
+     collect(DISTINCT rel) AS rels
 RETURN nodes, rels
 LIMIT 1000
 """

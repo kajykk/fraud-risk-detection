@@ -35,3 +35,23 @@ backend_logs*.txt
 
 # WorkBuddy
 .workbuddy/
+
+# Terraform（含 .tfstate 状态文件：含明文 secrets，禁止入库）
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.plan
+.terraform/
+crash.log
+override.tf
+override.tf.json
+
+# Helm/凭证类
+*.secret.yaml
+credentials.json
+*.pem
+*.key
+*.p12
+id_rsa
+id_ed25519

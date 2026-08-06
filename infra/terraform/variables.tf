@@ -73,10 +73,9 @@ variable "ack_cluster_version" {
 }
 
 variable "ack_node_password" {
-  description = "ACK 节点 SSH 密码（生产建议改用密钥对）"
+  description = "ACK 节点 SSH 密码（必须通过 -var / tfvars / secrets 注入；无默认值，缺省即报错防止弱口令部署）"
   type        = string
   sensitive   = true
-  default     = "ChangeMe!2026"
 }
 
 # ---------- RDS PostgreSQL ----------
@@ -105,10 +104,9 @@ variable "rds_username" {
 }
 
 variable "rds_password" {
-  description = "RDS 主密码（生产必须从外部 secrets 注入）"
+  description = "RDS 主密码（必须通过 -var / tfvars / secrets 注入；无默认值，缺省即报错防止弱口令部署）"
   type        = string
   sensitive   = true
-  default     = "ChangeMe-RDS-2026"
 }
 
 variable "rds_db_name" {
@@ -131,10 +129,9 @@ variable "redis_engine_version" {
 }
 
 variable "redis_password" {
-  description = "Redis 密码"
+  description = "Redis 密码（必须通过 -var / tfvars / secrets 注入；无默认值，缺省即报错防止弱口令部署）"
   type        = string
   sensitive   = true
-  default     = "ChangeMe-Redis-2026"
 }
 
 # ---------- Neo4j（自建 ECS） ----------
@@ -151,10 +148,9 @@ variable "neo4j_storage" {
 }
 
 variable "neo4j_password" {
-  description = "Neo4j 密码"
+  description = "Neo4j 密码（必须通过 -var / tfvars / secrets 注入；无默认值，缺省即报错防止弱口令部署）"
   type        = string
   sensitive   = true
-  default     = "ChangeMe-Neo4j-2026"
 }
 
 # ---------- OSS ----------

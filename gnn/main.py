@@ -10,11 +10,12 @@
 from __future__ import annotations
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .community.detector import Community
@@ -23,6 +24,20 @@ from .graph_service import GNNGraphService, Graph
 from .models.graphsage import GraphSAGE
 
 logger = structlog.get_logger(__name__)
+
+
+async def require_api_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key"),
+) -> None:
+    """服务间鉴权：X-Api-Key 须与 GNN_API_KEY 一致（恒定时间比较）。
+
+    未配置 GNN_API_KEY 时鉴权关闭（仅开发/本地；生产必须配置）。
+    """
+    expected = settings.server.api_key
+    if not expected:
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, expected):
+        raise HTTPException(status_code=401, detail="invalid_api_key")
 
 
 _service: Optional[GNNGraphService] = None
@@ -130,7 +145,7 @@ def create_app() -> FastAPI:
             "service_ready": _service is not None,
         }
 
-    @app.post("/v1/graph/related")
+    @app.post("/v1/graph/related", dependencies=[Depends(require_api_key)])
     async def query_related(req: RelatedRequest) -> Dict[str, Any]:
         if _service is None:
             raise HTTPException(status_code=503, detail="service_not_ready")
@@ -145,7 +160,7 @@ def create_app() -> FastAPI:
             "latency_ms": graph.latency_ms,
         }
 
-    @app.post("/v1/graph/embedding")
+    @app.post("/v1/graph/embedding", dependencies=[Depends(require_api_key)])
     async def compute_embedding(req: EmbeddingRequest) -> Dict[str, Any]:
         if _service is None:
             raise HTTPException(status_code=503, detail="service_not_ready")
@@ -154,7 +169,7 @@ def create_app() -> FastAPI:
         )
         return {"node_id": req.node_id, "embedding": embedding, "dim": len(embedding)}
 
-    @app.post("/v1/graph/community")
+    @app.post("/v1/graph/community", dependencies=[Depends(require_api_key)])
     async def detect_community(req: CommunityRequest) -> Dict[str, Any]:
         if _service is None:
             raise HTTPException(status_code=503, detail="service_not_ready")

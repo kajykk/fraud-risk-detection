@@ -126,6 +126,12 @@ config:
   VITE_APP_VERSION: "1.1.0"
   NGINX_GZIP: "on"
 
+# ---------- 服务账号（无附加权限，禁用自动挂载令牌） ----------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
 # ---------- 亲和性 ----------
 affinity:
   podAntiAffinity:

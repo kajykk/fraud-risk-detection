@@ -51,6 +51,8 @@ spec:
       dnsPolicy: {{ .Values.dnsPolicy }}
       restartPolicy: {{ .Values.restartPolicy }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "frd-ml.serviceAccountName" . }}
+      automountServiceAccountToken: false
       containers:
         - name: {{ .Values.gnn.container.name }}
           image: {{ include "frd-ml.image-gnn" . }}
@@ -68,12 +70,24 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if .Values.gnn.secret.enabled }}
+            {{- if .Values.gnn.secret.existingSecret }}
+            {{- range $key, $_value := .Values.gnn.secret.data }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gnn.secret.existingSecret }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- else }}
             {{- range $key, $value := .Values.gnn.secret.data }}
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
                   name: {{ include "frd-ml.fullname" $ }}-gnn-secret
                   key: {{ $key }}
+            {{- end }}
+            {{- end }}
             {{- end }}
           {{- with .Values.gnn.container.readinessProbe }}
           readinessProbe:
@@ -97,8 +111,9 @@ spec:
             sizeLimit: 256Mi
 ---
 {{/*
-GNN Secret
+GNN Secret（仅当 secret.enabled 且未引用 existingSecret 时创建）
 */}}
+{{- if and .Values.gnn.secret.enabled (not .Values.gnn.secret.existingSecret) }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -111,3 +126,4 @@ data:
   {{- range $key, $value := .Values.gnn.secret.data }}
   {{ $key }}: {{ $value | b64enc | quote }}
   {{- end }}
+{{- end }}

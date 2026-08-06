@@ -52,6 +52,8 @@ spec:
       dnsPolicy: {{ .Values.dnsPolicy }}
       restartPolicy: {{ .Values.restartPolicy }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "frd-ml.serviceAccountName" . }}
+      automountServiceAccountToken: false
       containers:
         - name: {{ .Values.ml.container.name }}
           image: {{ include "frd-ml.image-ml" . }}
@@ -69,12 +71,24 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if .Values.ml.secret.enabled }}
+            {{- if .Values.ml.secret.existingSecret }}
+            {{- range $key, $_value := .Values.ml.secret.data }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ml.secret.existingSecret }}
+                  key: {{ $key }}
+            {{- end }}
+            {{- else }}
             {{- range $key, $value := .Values.ml.secret.data }}
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
                   name: {{ include "frd-ml.fullname" $ }}-ml-secret
                   key: {{ $key }}
+            {{- end }}
+            {{- end }}
             {{- end }}
           {{- with .Values.ml.container.startupProbe }}
           startupProbe:
@@ -107,8 +121,9 @@ spec:
             sizeLimit: 5Gi
 ---
 {{/*
-ML Secret
+ML Secret（仅当 secret.enabled 且未引用 existingSecret 时创建）
 */}}
+{{- if and .Values.ml.secret.enabled (not .Values.ml.secret.existingSecret) }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -121,3 +136,4 @@ data:
   {{- range $key, $value := .Values.ml.secret.data }}
   {{ $key }}: {{ $value | b64enc | quote }}
   {{- end }}
+{{- end }}

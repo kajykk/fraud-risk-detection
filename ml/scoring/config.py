@@ -85,6 +85,9 @@ class ServerConfig:
     port: int = field(default_factory=lambda: int(os.getenv("ML_PORT", "8501")))
     workers: int = field(default_factory=lambda: int(os.getenv("ML_WORKERS", "4")))
     enable_prometheus: bool = field(default_factory=lambda: _env_bool("ML_ENABLE_PROMETHEUS", True))
+    # 服务间鉴权 API Key（backend 通过 X-Api-Key 透传，须与 ML_API_KEY 一致；
+    # 未配置时鉴权关闭并告警，生产必须配置）
+    api_key: str = field(default_factory=lambda: os.getenv("ML_API_KEY", ""))
 
 
 @dataclass(frozen=True)

@@ -46,6 +46,8 @@ spec:
       dnsPolicy: {{ .Values.dnsPolicy }}
       restartPolicy: {{ .Values.restartPolicy }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "frd-frontend.serviceAccountName" . }}
+      automountServiceAccountToken: false
       containers:
         - name: {{ .Values.container.name }}
           image: {{ include "frd-frontend.image" . }}

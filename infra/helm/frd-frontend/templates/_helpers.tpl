@@ -54,3 +54,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s/%s/%s:%s" $registry $namespace $repository $tag -}}
 {{- end -}}
+
+{{- define "frd-frontend.serviceAccountName" -}}
+{{- if .Values.serviceAccount.name -}}
+{{- .Values.serviceAccount.name -}}
+{{- else -}}
+{{- printf "%s-sa" (include "frd-frontend.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
