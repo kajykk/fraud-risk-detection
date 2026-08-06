@@ -33,6 +33,7 @@ spec:
     spec:
       {{- include "frd-backend.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: frd-backend-sa
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.affinity }}
