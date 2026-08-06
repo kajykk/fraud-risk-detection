@@ -35,6 +35,45 @@ const request: AxiosInstance = axios.create({
   }
 })
 
+// 401 自动刷新：并发 401 共享同一个刷新请求；避免与 auth API 循环依赖
+let refreshPromise: Promise<string | null> | null = null
+
+function isAuthPath(url?: string): boolean {
+  return !!url && /\/auth\/(login|refresh|token)/.test(url)
+}
+
+async function tryRefreshToken(): Promise<string | null> {
+  const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH_TOKEN)
+  if (!refreshToken) return null
+  try {
+    // 用裸 axios 发送，避免经过本拦截器（防递归）；仍带 X-Request-Id 供后端链路追踪
+    const res = await axios.post<ApiResponse<{ access_token: string; refresh_token?: string }>>(
+      `${request.defaults.baseURL}/auth/refresh`,
+      { refresh_token: refreshToken },
+      { headers: { 'X-Request-Id': genRequestId() } }
+    )
+    const data = res.data?.data
+    if (!data?.access_token) return null
+    localStorage.setItem(STORAGE_KEY_TOKEN, data.access_token)
+    if (data.refresh_token) {
+      localStorage.setItem(STORAGE_KEY_REFRESH_TOKEN, data.refresh_token)
+    }
+    return data.access_token
+  } catch {
+    return null
+  }
+}
+
+/** 清除 token 并跳转登录（避免在拦截器内 import store 造成循环依赖） */
+function redirectToLogin() {
+  localStorage.removeItem(STORAGE_KEY_TOKEN)
+  localStorage.removeItem(STORAGE_KEY_REFRESH_TOKEN)
+  const current = window.location.pathname + window.location.search
+  if (!window.location.pathname.startsWith('/login')) {
+    window.location.href = `/login?redirect=${encodeURIComponent(current)}`
+  }
+}
+
 // 请求拦截器：注入 Authorization Bearer token + X-Request-ID
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
@@ -64,16 +103,31 @@ request.interceptors.response.use(
   (error) => {
     const status = error?.response?.status
     const respData = error?.response?.data as ApiResponse | undefined
+    const config = error?.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
+
+    if (status === 401 && config && !config._retried && !isAuthPath(config.url)) {
+      // 尝试自动刷新 token 并重放请求一次
+      refreshPromise = refreshPromise ?? tryRefreshToken()
+      return refreshPromise.finally(() => {
+        refreshPromise = null
+      }).then((token) => {
+        if (!token) {
+          redirectToLogin()
+          return Promise.reject(error)
+        }
+        config.headers = config.headers ?? {}
+        config.headers.Authorization = `Bearer ${token}`
+        config._retried = true
+        return request(config)
+      })
+    }
 
     if (status === 401) {
-      // 清除 token 并跳转登录（避免在拦截器内 import store 造成循环依赖）
-      localStorage.removeItem(STORAGE_KEY_TOKEN)
-      localStorage.removeItem(STORAGE_KEY_REFRESH_TOKEN)
-      const current = window.location.pathname + window.location.search
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = `/login?redirect=${encodeURIComponent(current)}`
+      // 登录/刷新本身的 401：直接清除并跳转
+      redirectToLogin()
+      if (!isAuthPath(config?.url)) {
+        ElMessage.error('登录已过期，请重新登录')
       }
-      ElMessage.error('登录已过期，请重新登录')
       return Promise.reject(error)
     }
 

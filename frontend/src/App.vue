@@ -1,12 +1,9 @@
 <script setup lang="ts">
-import { ElConfigProvider, ElLoading } from 'element-plus'
+import { ElConfigProvider } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { useThemeStore } from '@/stores/theme'
 
 const themeStore = useThemeStore()
-
-// 全局 loading 指令（路由切换/请求时可调用）
-ElLoading.service({ lock: true, text: '加载中...', background: 'rgba(0,0,0,0.4)' })
 </script>
 
 <template>

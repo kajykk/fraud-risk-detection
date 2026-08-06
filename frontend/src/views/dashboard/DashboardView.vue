@@ -117,20 +117,20 @@ const teamKpi = ref([
 
 async function fetchSummary() {
   try {
-    // 并行获取 KPI 汇总 + 趋势数据
-    const [summaryRes, trendRes] = await Promise.all([
+    // 并行获取 KPI 汇总 + 趋势数据（get<T> 已剥离 ApiResponse 外壳，直接取业务数据）
+    const [summary, trend] = await Promise.all([
       get<any>('/reports/summary'),
       get<any>('/reports/trend?days=7'),
     ])
-    if (summaryRes.data) {
-      Object.assign(kpi.value, summaryRes.data)
+    if (summary) {
+      Object.assign(kpi.value, summary)
     }
-    if (trendRes.data) {
+    if (trend) {
       trendData.value = {
-        dates: trendRes.data.dates || [],
-        tx: trendRes.data.tx || [],
-        blocked: trendRes.data.blocked || [],
-        cases: trendRes.data.review || [],
+        dates: trend.dates || [],
+        tx: trend.tx || [],
+        blocked: trend.blocked || [],
+        cases: trend.review || [],
       }
     }
   } catch {

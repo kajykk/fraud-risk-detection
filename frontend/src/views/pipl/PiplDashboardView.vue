@@ -56,6 +56,17 @@ const consentQuery = reactive<{ user_id: string; purpose: ConsentPurpose | ''; s
 const consentResult = ref<ConsentListResult | null>(null)
 const consentLoading = ref(false)
 
+/** 获取合规官验证 token（fail-closed：无 token 则中止敏感操作） */
+async function requireVerificationToken(): Promise<string | null> {
+  const { value } = await ElMessageBox.prompt('请输入合规验证令牌（由验证流程签发）', '合规验证', {
+    inputType: 'password',
+    confirmButtonText: '确认',
+    cancelButtonText: '取消',
+    inputValidator: (v: string) => (v && v.trim().length > 0 ? true : '请输入验证令牌')
+  })
+  return value ? value.trim() : null
+}
+
 async function fetchConsents() {
   if (!consentQuery.user_id.trim()) {
     ElMessage.warning('请输入用户 ID')
@@ -84,10 +95,14 @@ async function onWithdraw(c: any) {
     })
     const svc = ElLoading.service({ lock: true, text: '撤回中...' })
     try {
-      // verification_token 由 COMPLIANCE_OFFICER 通过验证流程获取，此处占位
+      const verificationToken = await requireVerificationToken()
+      if (!verificationToken) {
+        ElMessage.warning('已取消：未提供验证令牌')
+        return
+      }
       await withdrawConsent({
         user_id: c.user_id,
-        verification_token: 'officer-verified',
+        verification_token: verificationToken,
         consent_id: c.consent_id,
         withdrawal_reason: value ? 'OTHER' : undefined,
         effective_immediately: true
@@ -126,9 +141,14 @@ async function submitExport() {
   }
   const svc = ElLoading.service({ lock: true, text: '提交导出申请...' })
   try {
+    const verificationToken = await requireVerificationToken()
+    if (!verificationToken) {
+      ElMessage.warning('已取消：未提供验证令牌')
+      return
+    }
     exportTask.value = await requestDataExport({
       user_id: exportForm.user_id,
-      verification_token: 'officer-verified',
+      verification_token: verificationToken,
       scope: exportForm.scope,
       format: exportForm.format,
       start_date: exportForm.start_date || undefined,
@@ -177,9 +197,14 @@ async function submitDeletion() {
   }
   const svc = ElLoading.service({ lock: true, text: '提交删除申请...' })
   try {
+    const verificationToken = await requireVerificationToken()
+    if (!verificationToken) {
+      ElMessage.warning('已取消：未提供验证令牌')
+      return
+    }
     deletionTask.value = await requestDeletion({
       user_id: deleteForm.user_id,
-      verification_token: 'officer-verified',
+      verification_token: verificationToken,
       scope: deleteForm.scope.split(',').map((s) => s.trim()).filter(Boolean),
       reason: deleteForm.reason,
       retain_for_aml: deleteForm.retain_for_aml,
@@ -222,9 +247,14 @@ async function submitRectification() {
   rectifyLoading.value = true
   const svc = ElLoading.service({ lock: true, text: '提交更正申请...' })
   try {
+    const verificationToken = await requireVerificationToken()
+    if (!verificationToken) {
+      ElMessage.warning('已取消：未提供验证令牌')
+      return
+    }
     await requestRectification({
       user_id: rectifyForm.user_id,
-      verification_token: 'officer-verified',
+      verification_token: verificationToken,
       reason: 'USER_REQUEST',
       corrections: [
         {

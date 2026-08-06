@@ -74,31 +74,15 @@ async function submitNotifPrefs() {
   // TODO: 调用 PATCH /users/me/preferences
 }
 
-const tokens = ref([
-  {
-    token_id: 'tok_demo_001',
-    name: 'Default API Token',
-    scopes: ['transaction:score', 'transaction:read'],
-    status: 'ACTIVE',
-    created_at: '2026-07-27T08:00:00Z',
-    expires_at: '2027-07-27T08:00:00Z'
-  }
-])
+const tokens = ref([] as Array<Record<string, unknown>>)
 
 async function createToken() {
   const { value } = await ElMessageBox.prompt('输入 Token 名称', '新建 API Token', {
     inputPattern: /^.{1,40}$/,
     inputErrorMessage: '名称长度 1-40'
   })
-  ElMessage.info('API Token 生成 API 待接入（D05 §3 待补齐 token 端点）')
-  tokens.value.push({
-    token_id: `tok_${Date.now()}`,
-    name: value,
-    scopes: [],
-    status: 'ACTIVE',
-    created_at: new Date().toISOString(),
-    expires_at: ''
-  } as any)
+  void value
+  ElMessage.info('API Token 生成与管理端点待接入（D05 §3 待补齐），当前无可用 Tokens')
 }
 
 async function revokeToken(row: any) {
@@ -107,15 +91,7 @@ async function revokeToken(row: any) {
   ElMessage.success('已吊销')
 }
 
-const sessions = ref([
-  {
-    session_id: 'sess_demo_001',
-    ip: '127.0.0.1',
-    user_agent: navigator.userAgent,
-    last_active_at: new Date().toISOString(),
-    current: true
-  }
-])
+const sessions = ref([] as Array<Record<string, unknown>>)
 
 async function revokeSession(row: any) {
   if (row.current) {
@@ -214,6 +190,9 @@ async function onSwitchTenant(tenantId: string) {
               </div>
             </template>
             <ElTable :data="tokens" stripe>
+              <template #empty>
+                <span>暂无可用 API Token（管理端点待接入）</span>
+              </template>
               <ElTableColumn prop="name" label="名称" min-width="160" />
               <ElTableColumn prop="token_id" label="Token ID" min-width="200" />
               <ElTableColumn label="Scopes" min-width="220">
@@ -244,6 +223,9 @@ async function onSwitchTenant(tenantId: string) {
           <ElCard shadow="never">
             <template #header>活跃会话</template>
             <ElTable :data="sessions" stripe>
+              <template #empty>
+                <span>暂无活跃会话列表（会话管理端点待接入）</span>
+              </template>
               <ElTableColumn prop="session_id" label="会话 ID" min-width="200" />
               <ElTableColumn prop="ip" label="IP" width="140" />
               <ElTableColumn prop="user_agent" label="User Agent" min-width="280" />
