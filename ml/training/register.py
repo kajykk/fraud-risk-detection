@@ -37,9 +37,9 @@ class ModelRegistration:
     model_type: str
     version: str
     status: str = "REGISTERED"
-    metrics: dict[str, Any] = None
+    metrics: dict[str, Any] | None = None
     training_data_hash: str = ""
-    feature_names: list[str] = None
+    feature_names: list[str] | None = None
     artifacts_path: str = ""
     sha256: str = ""
     canary_percent: int = 0

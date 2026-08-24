@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import structlog
 
@@ -36,7 +36,7 @@ class Community:
     """社区（团伙）检测结果。"""
 
     community_id: int
-    members: List[str]  # 节点 ID 列表
+    members: list[str]  # 节点 ID 列表
     stats: CommunityStats
 
 
@@ -57,11 +57,11 @@ class CommunityDetector:
 
     def detect(
         self,
-        nodes: List[str],
-        edges: List[tuple[str, str]],
-        node_amounts: Optional[Dict[str, float]] = None,
-        node_fraud_labels: Optional[Dict[str, bool]] = None,
-    ) -> List[Community]:
+        nodes: list[str],
+        edges: list[tuple[str, str]],
+        node_amounts: dict[str, float] | None = None,
+        node_fraud_labels: dict[str, bool] | None = None,
+    ) -> list[Community]:
         """执行团伙检测。
 
         Args:
@@ -88,11 +88,11 @@ class CommunityDetector:
             partition = self._louvain(graph)
 
         # 按社区聚合
-        communities_map: Dict[int, List[str]] = {}
+        communities_map: dict[int, list[str]] = {}
         for node, cid in partition.items():
             communities_map.setdefault(cid, []).append(node)
 
-        results: List[Community] = []
+        results: list[Community] = []
         for cid, members in communities_map.items():
             if len(members) < self.min_community_size:
                 continue
@@ -109,7 +109,7 @@ class CommunityDetector:
         )
         return results
 
-    def _louvain(self, graph: Any) -> Dict[str, int]:
+    def _louvain(self, graph: Any) -> dict[str, int]:
         """Louvain 社区发现（python-louvain / networkx）。"""
         try:
             import networkx as nx  # type: ignore
@@ -119,7 +119,7 @@ class CommunityDetector:
                 communities = nx.louvain_communities(
                     graph, resolution=self.resolution, seed=42
                 )
-                partition: Dict[str, int] = {}
+                partition: dict[str, int] = {}
                 for cid, members in enumerate(communities):
                     for node in members:
                         partition[node] = cid
@@ -130,22 +130,20 @@ class CommunityDetector:
         try:
             import community as community_louvain  # type: ignore
 
-            return {
-                node: int(cid)
-                for node, cid in community_louvain.best_partition(
-                    graph, resolution=self.resolution, random_state=42
-                ).items()
-            }
+            best_partition = community_louvain.best_partition(  # type: ignore[attr-defined]
+                graph, resolution=self.resolution, random_state=42
+            )
+            return {node: int(cid) for node, cid in best_partition.items()}
         except Exception as exc:  # noqa: BLE001
             logger.warning("community.louvain.fallback_to_label_prop", error=str(exc))
             return self._label_propagation(graph)
 
-    def _label_propagation(self, graph: Any) -> Dict[str, int]:
+    def _label_propagation(self, graph: Any) -> dict[str, int]:
         """Label Propagation 社区发现（networkx 内置）。"""
         import networkx as nx  # type: ignore
 
         communities = nx.algorithms.community.label_propagation_communities(graph)
-        partition: Dict[str, int] = {}
+        partition: dict[str, int] = {}
         for cid, members in enumerate(communities):
             for node in members:
                 partition[node] = cid
@@ -154,9 +152,9 @@ class CommunityDetector:
     def _compute_stats(
         self,
         cid: int,
-        members: List[str],
-        node_amounts: Dict[str, float],
-        node_fraud_labels: Dict[str, bool],
+        members: list[str],
+        node_amounts: dict[str, float],
+        node_fraud_labels: dict[str, bool],
     ) -> CommunityStats:
         total_amount = sum(node_amounts.get(m, 0.0) for m in members)
         fraud_count = sum(1 for m in members if node_fraud_labels.get(m, False))
@@ -176,4 +174,4 @@ class CommunityDetector:
         )
 
 
-__all__ = ["CommunityDetector", "Community", "CommunityStats"]
+__all__ = ["Community", "CommunityDetector", "CommunityStats"]

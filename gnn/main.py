@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import secrets
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -27,7 +27,7 @@ logger = structlog.get_logger(__name__)
 
 
 async def require_api_key(
-    x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key"),
+    x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
 ) -> None:
     """服务间鉴权：X-Api-Key 须与 GNN_API_KEY 一致（恒定时间比较）。
 
@@ -40,8 +40,8 @@ async def require_api_key(
         raise HTTPException(status_code=401, detail="invalid_api_key")
 
 
-_service: Optional[GNNGraphService] = None
-_graphsage: Optional[GraphSAGE] = None
+_service: GNNGraphService | None = None
+_graphsage: GraphSAGE | None = None
 
 
 @asynccontextmanager
@@ -115,8 +115,8 @@ class CommunityRequest(BaseModel):
     node_id: str = Field(...)
     k_hops: int = Field(default=3, ge=1, le=5)
     tenant_id: str = Field(default="")
-    node_amounts: Optional[Dict[str, float]] = None
-    node_fraud_labels: Optional[Dict[str, bool]] = None
+    node_amounts: dict[str, float] | None = None
+    node_fraud_labels: dict[str, bool] | None = None
 
 
 def create_app() -> FastAPI:
@@ -136,7 +136,7 @@ def create_app() -> FastAPI:
             logger.warning("gnn.main.prometheus.disabled", error=str(exc))
 
     @app.get("/health")
-    async def health() -> Dict[str, Any]:
+    async def health() -> dict[str, Any]:
         return {
             "status": "ok",
             "service": "gnn",
@@ -146,7 +146,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/v1/graph/related", dependencies=[Depends(require_api_key)])
-    async def query_related(req: RelatedRequest) -> Dict[str, Any]:
+    async def query_related(req: RelatedRequest) -> dict[str, Any]:
         if _service is None:
             raise HTTPException(status_code=503, detail="service_not_ready")
         graph: Graph = await _service.query_related(
@@ -161,19 +161,19 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/v1/graph/embedding", dependencies=[Depends(require_api_key)])
-    async def compute_embedding(req: EmbeddingRequest) -> Dict[str, Any]:
+    async def compute_embedding(req: EmbeddingRequest) -> dict[str, Any]:
         if _service is None:
             raise HTTPException(status_code=503, detail="service_not_ready")
-        embedding: List[float] = await _service.compute_embedding(
+        embedding: list[float] = await _service.compute_embedding(
             node_id=req.node_id, tenant_id=req.tenant_id
         )
         return {"node_id": req.node_id, "embedding": embedding, "dim": len(embedding)}
 
     @app.post("/v1/graph/community", dependencies=[Depends(require_api_key)])
-    async def detect_community(req: CommunityRequest) -> Dict[str, Any]:
+    async def detect_community(req: CommunityRequest) -> dict[str, Any]:
         if _service is None:
             raise HTTPException(status_code=503, detail="service_not_ready")
-        community: Optional[Community] = await _service.detect_community(
+        community: Community | None = await _service.detect_community(
             node_id=req.node_id,
             k_hops=req.k_hops,
             tenant_id=req.tenant_id,

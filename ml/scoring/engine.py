@@ -261,11 +261,14 @@ class MLScoringEngine:
         self, modality_name: str, tenant_id: str, reason: str
     ) -> ModalityScore:
         """统一熔断兜底入口（ADR-011）。"""
-        modality = {
+        modalities: dict[
+            str, StructuredModality | TextModality | BehaviorModality
+        ] = {
             "structured": self.structured,
             "text": self.text,
             "behavior": self.behavior,
-        }.get(modality_name)
+        }
+        modality = modalities.get(modality_name)
         if modality is None:
             return ModalityScore(
                 score=0.5,

@@ -2,4 +2,4 @@
 
 from .detector import Community, CommunityDetector, CommunityStats
 
-__all__ = ["CommunityDetector", "Community", "CommunityStats"]
+__all__ = ["Community", "CommunityDetector", "CommunityStats"]

@@ -72,9 +72,9 @@ def train(
     from .evaluate import compute_auc, compute_f1, compute_recall_at_fpr
 
     metrics = {
-        "auc": compute_auc(y, probas),
-        "f1": compute_f1(y, (probas >= 0.5).astype(int)),
-        "recall_at_1pct_fpr": compute_recall_at_fpr(y, probas, fpr_threshold=0.01),
+        "auc": compute_auc(y.tolist(), probas.tolist()),
+        "f1": compute_f1(y.tolist(), (probas >= 0.5).astype(int).tolist()),
+        "recall_at_1pct_fpr": compute_recall_at_fpr(y.tolist(), probas.tolist(), fpr_threshold=0.01),
     }
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     model.save_model(save_path)

@@ -10,10 +10,10 @@
 """
 
 __all__ = [
-    "main",
+    "community",
     "config",
     "graph_service",
+    "main",
     "models",
     "training",
-    "community",
 ]

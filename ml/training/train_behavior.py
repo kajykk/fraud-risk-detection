@@ -54,7 +54,11 @@ def _pad_or_truncate(series: list[list[float]], seq_len: int, n_features: int):
 
     if len(series) >= seq_len:
         series = series[:seq_len]
-    cols = list(zip(*series, strict=False)) if series else [[0.0] * seq_len for _ in range(n_features)]
+    cols: list[list[float]] = (
+        [list(col) for col in zip(*series, strict=False)]
+        if series
+        else [[0.0] * seq_len for _ in range(n_features)]
+    )
     while len(cols) < n_features:
         cols.append([0.0] * seq_len)
     for i, col in enumerate(cols):

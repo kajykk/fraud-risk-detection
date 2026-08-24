@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, Optional
 
 import pytest
 
@@ -13,9 +12,9 @@ from gnn.graph_service import GNNGraphService, Graph
 
 class _FakeRedis:
     def __init__(self) -> None:
-        self._store: Dict[str, str] = {}
+        self._store: dict[str, str] = {}
 
-    async def get(self, key: str) -> Optional[str]:
+    async def get(self, key: str) -> str | None:
         return self._store.get(key)
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:

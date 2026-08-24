@@ -112,4 +112,4 @@ def train(
     )
 
 
-__all__ = ["train", "TrainResult"]
+__all__ = ["TrainResult", "train"]

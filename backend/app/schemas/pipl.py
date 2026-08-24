@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class ConsentTypeEnum(str, Enum):
+class ConsentTypeEnum(StrEnum):
     EXPLICIT = "EXPLICIT"
     IMPLICIT_BY_ACTION = "IMPLICIT_BY_ACTION"
 
 
-class ConsentPurpose(str, Enum):
+class ConsentPurpose(StrEnum):
     """同意用途（基准 §3.11）。"""
 
     TRANSACTION_SCORING = "TRANSACTION_SCORING"
@@ -24,7 +24,7 @@ class ConsentPurpose(str, Enum):
     RESEARCH = "RESEARCH"
 
 
-class ConsentStatus(str, Enum):
+class ConsentStatus(StrEnum):
     """同意状态（基准 §3.11）。"""
 
     GRANTED = "GRANTED"
@@ -32,7 +32,7 @@ class ConsentStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 
-class LegalBasis(str, Enum):
+class LegalBasis(StrEnum):
     CONSENT = "CONSENT"
     CONTRACT = "CONTRACT"
     LEGAL_OBLIGATION = "LEGAL_OBLIGATION"

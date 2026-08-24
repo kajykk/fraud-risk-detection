@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import structlog
 
@@ -33,8 +33,8 @@ class Graph:
     """k 跳关联子图（D03 §4.4 实时查询输出）。"""
 
     center_node_id: str
-    nodes: List[Dict[str, Any]]  # [{id, label, props}, ...]
-    edges: List[Dict[str, Any]]  # [{src, dst, type, props}, ...]
+    nodes: list[dict[str, Any]]  # [{id, label, props}, ...]
+    edges: list[dict[str, Any]]  # [{src, dst, type, props}, ...]
     k_hops: int
     queried_at: float = field(default_factory=time.time)
     latency_ms: float = 0.0
@@ -66,10 +66,10 @@ class GNNGraphService:
 
     def __init__(
         self,
-        neo4j_driver: Optional[Any] = None,
-        redis_client: Optional[Any] = None,
-        graphsage: Optional[GraphSAGE] = None,
-        community_detector: Optional[CommunityDetector] = None,
+        neo4j_driver: Any | None = None,
+        redis_client: Any | None = None,
+        graphsage: GraphSAGE | None = None,
+        community_detector: CommunityDetector | None = None,
     ) -> None:
         self._driver = neo4j_driver
         self._redis = redis_client
@@ -129,8 +129,10 @@ class GNNGraphService:
 
     def _query_k_hop_sync(
         self, node_id: str, k_hops: int, tenant_id: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """同步 Neo4j Cypher 查询（在 thread executor 中执行）。"""
+        if self._driver is None:
+            raise RuntimeError("neo4j driver not attached")
         with self._driver.session(database=settings.neo4j.database) as sess:
             result = sess.run(
                 K_HOP_QUERY,
@@ -147,7 +149,7 @@ class GNNGraphService:
             }
 
     @staticmethod
-    def _format_rels(rels: Any) -> List[Dict[str, Any]]:
+    def _format_rels(rels: Any) -> list[dict[str, Any]]:
         """把 Neo4j relationship 对象序列化为 dict。"""
         formatted = []
         for r in rels:
@@ -160,11 +162,12 @@ class GNNGraphService:
                         "props": dict(r),
                     }
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
+                logger.warning("relationship_serialize_failed", exc_info=True)
                 continue
         return formatted
 
-    async def compute_embedding(self, node_id: str, tenant_id: str = "") -> List[float]:
+    async def compute_embedding(self, node_id: str, tenant_id: str = "") -> list[float]:
         """GraphSAGE 推理：返回节点 embedding。
 
         优先查 Redis 缓存（TTL 1h），未命中则执行 PyG 推理。
@@ -194,7 +197,7 @@ class GNNGraphService:
         await self._write_cache(cache_key, embedding)
         return embedding
 
-    def _infer_embedding_sync(self, graph: Graph, node_id: str) -> List[float]:
+    def _infer_embedding_sync(self, graph: Graph, node_id: str) -> list[float]:
         """同步 GraphSAGE 推理（在 thread executor 中执行）。"""
         import torch  # type: ignore
 
@@ -238,9 +241,9 @@ class GNNGraphService:
         node_id: str,
         k_hops: int = 3,
         tenant_id: str = "",
-        node_amounts: Optional[Dict[str, float]] = None,
-        node_fraud_labels: Optional[Dict[str, bool]] = None,
-    ) -> Optional[Community]:
+        node_amounts: dict[str, float] | None = None,
+        node_fraud_labels: dict[str, bool] | None = None,
+    ) -> Community | None:
         """团伙检测：返回 node_id 所属社区。"""
         sub_graph = await self.query_related(node_id, k_hops=k_hops, tenant_id=tenant_id)
         if not sub_graph.nodes:
@@ -263,7 +266,7 @@ class GNNGraphService:
                 return community
         return None
 
-    async def _read_cache(self, key: str) -> Optional[List[float]]:
+    async def _read_cache(self, key: str) -> list[float] | None:
         if self._redis is None:
             return None
         try:
@@ -277,7 +280,7 @@ class GNNGraphService:
             logger.warning("graph_service.cache.read_failed", error=str(exc))
             return None
 
-    async def _write_cache(self, key: str, embedding: List[float]) -> None:
+    async def _write_cache(self, key: str, embedding: list[float]) -> None:
         if self._redis is None or not embedding:
             return
         try:
@@ -292,4 +295,4 @@ class GNNGraphService:
             logger.warning("graph_service.cache.write_failed", error=str(exc))
 
 
-__all__ = ["GNNGraphService", "Graph", "K_HOP_QUERY"]
+__all__ = ["K_HOP_QUERY", "GNNGraphService", "Graph"]

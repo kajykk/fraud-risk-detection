@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.schemas.common import CaseStatus
 
 
-class CaseType(str, Enum):
+class CaseType(StrEnum):
     """案件类型（基准 §3.7）。"""
 
     FRAUD = "FRAUD"
@@ -19,7 +19,7 @@ class CaseType(str, Enum):
     CHARGEBACK = "CHARGEBACK"
 
 
-class CaseLevel(str, Enum):
+class CaseLevel(StrEnum):
     """案件等级（基准 §3.7）。"""
 
     P0 = "P0"

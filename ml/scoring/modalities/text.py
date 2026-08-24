@@ -87,8 +87,10 @@ class TextModality:
         """同步 BERT 推理（在 thread executor 中调用）。"""
         import torch  # type: ignore
 
+        if self._tokenizer is None or self._model is None:
+            raise RuntimeError("text model not loaded")
         with torch.no_grad():
-            inputs = self._tokenizer(  # type: ignore[union-attr]
+            inputs = self._tokenizer(
                 text,
                 return_tensors="pt",
                 truncation=True,
@@ -96,7 +98,7 @@ class TextModality:
                 max_length=128,
             )
             inputs = {k: v.to(self._device) for k, v in inputs.items()}
-            outputs = self._model(**inputs)  # type: ignore[union-attr]
+            outputs = self._model(**inputs)
             logits = outputs.logits
             probs = torch.softmax(logits, dim=-1)
             # 假设标签 1 = fraud

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from app.config import settings
@@ -26,7 +26,7 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-class KillSwitchScope(str, Enum):
+class KillSwitchScope(StrEnum):
     """Kill Switch 作用域（4 级）。"""
 
     L1_GLOBAL = "L1_GLOBAL"
@@ -35,7 +35,7 @@ class KillSwitchScope(str, Enum):
     L4_RULE = "L4_RULE"
 
 
-class KillSwitchState(str, Enum):
+class KillSwitchState(StrEnum):
     """Kill Switch 状态机。"""
 
     IDLE = "IDLE"

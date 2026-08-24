@@ -111,6 +111,8 @@ class BehaviorModality:
     def _infer_sync(self, series: list[list[float]]) -> float:
         import torch  # type: ignore
 
+        if self._model is None:
+            raise RuntimeError("behavior model not loaded")
         with torch.no_grad():
             tensor = self._pad_or_truncate(series).to(self._device)
             # shape: (1, n_features, seq_len)
@@ -124,7 +126,11 @@ class BehaviorModality:
         if len(series) >= self._seq_len:
             series = series[: self._seq_len]
         # 转置
-        cols = list(zip(*series, strict=False)) if series else [[0.0] * self._n_features]
+        cols: list[list[float]] = (
+            [list(col) for col in zip(*series, strict=False)]
+            if series
+            else [[0.0] * self._n_features]
+        )
         while len(cols) < self._n_features:
             cols.append([0.0] * len(series))
         for i, col in enumerate(cols):

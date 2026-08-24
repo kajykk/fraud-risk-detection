@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Generic, TypeVar
+from enum import StrEnum
+from typing import TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +18,7 @@ def _utcnow():
     return datetime.now(UTC)
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """业务错误码（D05 §12）。"""
 
     OK = "OK"
@@ -67,7 +67,7 @@ class ErrorCode(str, Enum):
     RECTIFICATION_NOT_ALLOWED = "RECTIFICATION_NOT_ALLOWED"
 
 
-class RiskBand(str, Enum):
+class RiskBand(StrEnum):
     """风险等级（基准 §3.5）。"""
 
     LOW = "LOW"
@@ -76,7 +76,7 @@ class RiskBand(str, Enum):
     CRITICAL = "CRITICAL"
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     """决策枚举（基准 §3.1）。"""
 
     ALLOW = "ALLOW"
@@ -85,7 +85,7 @@ class Decision(str, Enum):
     CHALLENGE = "CHALLENGE"
 
 
-class CaseStatus(str, Enum):
+class CaseStatus(StrEnum):
     """案件状态（基准 §3.2）。"""
 
     OPEN = "OPEN"
@@ -95,7 +95,7 @@ class CaseStatus(str, Enum):
     FALSE_ALARM = "FALSE_ALARM"
 
 
-class ModelStatus(str, Enum):
+class ModelStatus(StrEnum):
     """模型状态（基准 §3.3）。"""
 
     REGISTERED = "REGISTERED"
@@ -104,7 +104,7 @@ class ModelStatus(str, Enum):
     RETIRED = "RETIRED"
 
 
-class RuleStatus(str, Enum):
+class RuleStatus(StrEnum):
     """规则版本状态（基准 §3.4）。"""
 
     DRAFT = "DRAFT"
@@ -113,7 +113,7 @@ class RuleStatus(str, Enum):
     RETIRED = "RETIRED"
 
 
-class RuleAction(str, Enum):
+class RuleAction(StrEnum):
     """规则动作（基准 §3.4，2 值，区别于 decision 4 值）。"""
 
     BLOCK = "BLOCK"
@@ -123,7 +123,7 @@ class RuleAction(str, Enum):
 T = TypeVar("T")
 
 
-class ApiResponse(BaseModel, Generic[T]):
+class ApiResponse[T](BaseModel):
     """统一响应格式（D05 §2.3）。"""
 
     code: str = ErrorCode.OK.value
@@ -142,7 +142,7 @@ class PageMeta(BaseModel):
     total: int = 0
 
 
-class PageResponse(BaseModel, Generic[T]):
+class PageResponse[T](BaseModel):
     """分页响应（D05 §2.4）。"""
 
     items: list[T]

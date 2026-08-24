@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any
 
 import structlog
 
@@ -24,11 +24,11 @@ logger = structlog.get_logger(__name__)
 class GraphSnapshot:
     """PyG 图快照（节点 + 边）。"""
 
-    node_ids: List[str]  # 节点原始 ID
+    node_ids: list[str]  # 节点原始 ID
     node_features: Any  # tensor (N, F)
     edge_index: Any  # tensor (2, E)
     edge_weight: Any  # tensor (E,)
-    labels: Optional[Any] = None  # 节点标签（欺诈/正常，用于训练）
+    labels: Any | None = None  # 节点标签（欺诈/正常，用于训练）
 
 
 # Cypher 查询模板（D03 §4.4 节点 + 关系）
@@ -64,12 +64,12 @@ class GraphBuilder:
         edges = self._fetch_edges(tenant_id)
         return self._to_snapshot(nodes, edges)
 
-    def _fetch_nodes(self, tenant_id: str) -> List[dict]:
+    def _fetch_nodes(self, tenant_id: str) -> list[dict]:
         with self._driver.session(database=self._database()) as sess:
             result = sess.run(NODE_QUERY, tenant_id=tenant_id)
             return [dict(record) for record in result]
 
-    def _fetch_edges(self, tenant_id: str) -> List[dict]:
+    def _fetch_edges(self, tenant_id: str) -> list[dict]:
         with self._driver.session(database=self._database()) as sess:
             result = sess.run(EDGE_QUERY, tenant_id=tenant_id)
             return [dict(record) for record in result]
@@ -79,7 +79,7 @@ class GraphBuilder:
 
         return settings.neo4j.database
 
-    def _to_snapshot(self, nodes: List[dict], edges: List[dict]) -> GraphSnapshot:
+    def _to_snapshot(self, nodes: list[dict], edges: list[dict]) -> GraphSnapshot:
         import numpy as np  # type: ignore
         import torch  # type: ignore
 
@@ -144,4 +144,4 @@ class GraphBuilder:
         )
 
 
-__all__ = ["GraphBuilder", "GraphSnapshot", "NODE_QUERY", "EDGE_QUERY"]
+__all__ = ["EDGE_QUERY", "NODE_QUERY", "GraphBuilder", "GraphSnapshot"]

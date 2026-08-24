@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.schemas.common import Decision, RiskBand
 
 
-class TxType(str, Enum):
+class TxType(StrEnum):
     """交易类型（基准 §3.8）。"""
 
     PURCHASE = "PURCHASE"
@@ -22,7 +22,7 @@ class TxType(str, Enum):
     PAYMENT = "PAYMENT"
 
 
-class Channel(str, Enum):
+class Channel(StrEnum):
     """渠道（基准 §3.8）。"""
 
     WEB = "WEB"
