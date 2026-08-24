@@ -5,6 +5,11 @@ CRUD + challenge 验证 + /test + /deliveries。
 说明：无独立 webhook 表，复用 merchants 表存储 webhook 配置
 （webhook_url / webhook_secret(加密) 字段，events/secret_hash/challenge_id 存于 risk_profile）。
 
+配置语义：
+- create / update 均显式针对请求体中的 merchant_id 定位商户行；
+  merchant_id 缺失或非法 → 400；商户不存在（或跨租户）→ 404。
+  绝不隐式覆写其他商户行，也不自动创建商户。
+
 安全约束：
 - webhook_secret 落库前 Fernet 加密（静态不可读，防 DB 泄露伪造 HMAC）
 - 注册时可选 challenge 回显校验：challenge_expected=True 时目标必须
@@ -25,7 +30,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 
 from app.api.deps import get_tenant_id, require_scope
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import FRDError, NotFoundError
 from app.db.session import session_scope
 from app.models.tenant import Merchant
 from app.schemas.common import ApiResponse, PageResponse
@@ -53,6 +58,31 @@ _CHALLENGE_TIMEOUT_SECONDS = 3.0
 def _secret_hash(secret: str) -> str:
     """计算 secret 的 SHA-256 前 16 位作为展示用哈希。"""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
+
+
+def _parse_merchant_id(value: str | None) -> uuid.UUID:
+    """解析请求体中的 merchant_id；缺失/非法一律 400（INVALID_PARAMS）。"""
+    if value is None or not value.strip():
+        raise FRDError(
+            "merchant_id is required",
+            code="INVALID_PARAMS",
+            http_status=400,
+        )
+    try:
+        return uuid.UUID(value.strip())
+    except ValueError as exc:
+        raise FRDError(
+            f"invalid merchant_id format: {value}",
+            code="INVALID_PARAMS",
+            http_status=400,
+        ) from exc
+
+
+async def _load_merchant_by_id(
+    session, merchant_id: uuid.UUID, tenant_id: str
+) -> Merchant:
+    """按主键加载租户内商户（webhook 配置载体），找不到抛 NotFoundError。"""
+    return await _load_merchant(session, str(merchant_id), tenant_id)
 
 
 def _merchant_to_out(merchant: Merchant) -> WebhookOut:
@@ -124,38 +154,22 @@ async def create_webhook(
 ) -> ApiResponse[WebhookOut]:
     """注册 Webhook。
 
-    challenge_expected=True（默认）：发送 challenge 回调，回显通过才 ACTIVE；
-    否则保持 PENDING_VERIFICATION 直至 POST /{id}/challenge/verify。
+    显式针对请求体 merchant_id 定位的商户行写入配置：
+    - merchant_id 缺失/非法 → 400；商户不存在或跨租户 → 404
+    - challenge_expected=True（默认）：发送 challenge 回调，回显通过才 ACTIVE；
+      否则保持 PENDING_VERIFICATION 直至 POST /{id}/challenge/verify
     """
+    merchant_id = _parse_merchant_id(req.merchant_id)
     challenge_id = f"ch_{uuid.uuid4()}"
     verified = False
     if req.challenge_expected:
         verified = await _run_challenge(req.url, challenge_id)
 
     async with session_scope(tenant_id) as session:
-        result = await session.execute(
-            select(Merchant)
-            .where(Merchant.tenant_id == uuid.UUID(tenant_id))
-            .order_by(Merchant.created_at.asc())
-            .limit(1)
-        )
-        merchant = result.scalar_one_or_none()
-        if merchant is None:
-            prefix = req.url.split("//")[-1][:12] or "default"
-            merchant = Merchant(
-                tenant_id=uuid.UUID(tenant_id),
-                merchant_no=f"M{int(time.time())}{uuid.uuid4().hex[:6]}",
-                name=f"webhook-{prefix}",
-                webhook_url=req.url,
-                webhook_secret=encrypt_webhook_secret(req.secret),
-                status="ACTIVE",
-                risk_profile={},
-            )
-            session.add(merchant)
-        else:
-            merchant.webhook_url = req.url
-            merchant.webhook_secret = encrypt_webhook_secret(req.secret)
-            merchant.status = "ACTIVE"
+        # 仅定位请求体指定的商户（租户隔离），不覆写其他商户，也不自动创建
+        merchant = await _load_merchant_by_id(session, merchant_id, tenant_id)
+        merchant.webhook_url = req.url
+        merchant.webhook_secret = encrypt_webhook_secret(req.secret)
         risk_profile = dict(merchant.risk_profile or {})
         risk_profile["webhook_events"] = list(req.events)
         risk_profile["secret_hash"] = _secret_hash(req.secret)
@@ -222,9 +236,29 @@ async def update_webhook(
     tenant_id: str = Depends(get_tenant_id),
     _user: dict = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookOut]:
-    """更新 Webhook（URL/secret 变更时重发 challenge 验证；secret 省略则保留原值）。"""
+    """更新 Webhook（URL/secret 变更时重发 challenge 验证；secret 省略则保留原值）。
+
+    显式针对请求体 merchant_id 定位商户行：缺失 → 400；
+    与路径 {webhook_id} 不一致 → 400（防客户端误写）；商户不存在/跨租户 → 404。
+    """
+    body_merchant_id = _parse_merchant_id(req.merchant_id)
+    try:
+        path_merchant_id = uuid.UUID(webhook_id)
+    except ValueError as exc:
+        raise FRDError(
+            f"invalid webhook id format: {webhook_id}",
+            code="INVALID_PARAMS",
+            http_status=400,
+        ) from exc
+    if body_merchant_id != path_merchant_id:
+        raise FRDError(
+            "merchant_id does not match resource id",
+            code="INVALID_PARAMS",
+            http_status=400,
+        )
+
     async with session_scope(tenant_id) as session:
-        merchant = await _load_merchant(session, webhook_id, tenant_id)
+        merchant = await _load_merchant_by_id(session, body_merchant_id, tenant_id)
         merchant.webhook_url = req.url
         if req.secret is not None:
             merchant.webhook_secret = encrypt_webhook_secret(req.secret)

@@ -31,6 +31,8 @@ from app.services.kill_switch import KillSwitchScope, kill_switch
 from app.services.ml_engine import ml_engine
 from app.services.rule_engine import rule_engine
 from app.services.tokenization import tokenization_service
+from app.services.webhook import store_webhook_event
+from app.services.ws_events import publish_ws_event
 
 logger = get_logger(__name__)
 
@@ -126,13 +128,16 @@ class ScoringOrchestrator:
         )
 
         # 5. DB 持久化（等待完成，保证评分可追溯；失败不阻断响应，内部已 catch）
-        transaction_id, score_id = await self._persist_to_db(tenant_id, transaction, result)
+        transaction_id, score_id, webhook_merchant_ids = await self._persist_to_db(
+            tenant_id, transaction, result
+        )
 
         # 5.1 异步跟进任务（评分持久化后条件投递，ADR-014）：
         #     高风险（HIGH/CRITICAL）→ scoring.generate_case 自动建案；
-        #     全部 → shap.compute 异步解释。fire-and-forget，不阻塞响应。
-        self._dispatch_followup_tasks(
-            tenant_id, transaction, result, transaction_id, score_id
+        #     全部 → shap.compute 异步解释；reject/manual_review 决策 →
+        #     webhook.deliver 事件投递。fire-and-forget，不阻塞响应。
+        await self.dispatch_followup_tasks(
+            tenant_id, transaction, result, transaction_id, score_id, webhook_merchant_ids
         )
 
         # 6. Redis 缓存写入（等待完成；失败降级为仅响应，内部已 catch）
@@ -240,20 +245,26 @@ class ScoringOrchestrator:
         tenant_id: str,
         transaction: dict[str, Any],
         result: ScoreResult,
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, list[str]]:
         """持久化交易 + 评分到 PostgreSQL（失败不阻断主路径）。
 
         由于 Kafka Consumer 尚未实现，直接在主进程异步写入。
         生产环境应由 Kafka Consumer 消费（ADR-014）。
 
         Returns:
-            (transaction_id, score_id)；持久化失败时返回 (None, None)。
+            (transaction_id, score_id, webhook_merchant_ids)；
+            webhook_merchant_ids 为该租户已配置 ACTIVE webhook 的商户 ID
+            （供 reject/manual_review 决策构造事件投递）；
+            持久化失败时返回 (None, None, [])。
         """
         try:
             from datetime import datetime
             from decimal import Decimal
 
+            from sqlalchemy import select
+
             from app.db.session import session_scope
+            from app.models.tenant import Merchant
             from app.models.transaction import Score, Transaction
 
             async with session_scope(tenant_id) as session:
@@ -315,29 +326,57 @@ class ScoringOrchestrator:
                     external_tx_id=tx.external_tx_id,
                     decision=result.decision.value,
                 )
-                return str(tx.id), str(score.id)
+                # 已配置 ACTIVE webhook 的商户（同 session 内查询，热路径仅一次索引查询）
+                webhook_rows = await session.execute(
+                    select(Merchant.id).where(
+                        Merchant.tenant_id == uuid.UUID(tenant_id),
+                        Merchant.webhook_url.isnot(None),
+                        Merchant.status == "ACTIVE",
+                    )
+                )
+                webhook_merchant_ids = [str(m) for m in webhook_rows.scalars().all()]
+                return str(tx.id), str(score.id), webhook_merchant_ids
         except Exception as exc:
             logger.warning("db_persist_failed", error=str(exc), tenant_id=tenant_id)
-            return None, None
+            return None, None, []
 
-    def _dispatch_followup_tasks(
+    async def dispatch_followup_tasks(
         self,
         tenant_id: str,
         transaction: dict[str, Any],
         result: ScoreResult,
         transaction_id: str | None,
         score_id: str | None,
+        webhook_merchant_ids: list[str] | None = None,
     ) -> None:
         """评分持久化后的异步跟进任务投递（fire-and-forget）。
 
         - risk_band ∈ {HIGH, CRITICAL} → scoring.generate_case（自动建案）
         - 全部评分 → shap.compute（异步 SHAP 解释，结果缓存 24h）
+        - decision ∈ {DENY, REVIEW} → 构造 webhook_event 并按商户投递
+          webhook.deliver（reject / manual_review 事件，D05 §11）
+        - 全部评分 → frd:ws_events 发布 transaction.analysis_completed（实时推送）
 
         按名 send_task 投递到 Celery broker；eager 模式（测试/单机内联）
         或持久化失败（无主键）时不投递；broker 异常仅告警不阻断评分响应。
         """
         if transaction_id is None:
             return
+
+        # WS 实时推送：评分分析完成（不依赖 broker，失败内部吞掉）
+        await publish_ws_event(
+            tenant_id,
+            "transaction.analysis_completed",
+            {
+                "decision_id": result.decision_id,
+                "external_tx_id": transaction.get("external_tx_id"),
+                "decision": result.decision.value,
+                "risk_score": result.risk_score,
+                "risk_band": result.risk_band.value,
+                "transaction_id": transaction_id,
+            },
+        )
+
         try:
             from app.workers.celery_app import celery_app
 
@@ -371,6 +410,41 @@ class ScoringOrchestrator:
                     result.model_version,
                 ],
             )
+            # Webhook 投递闭环：reject/manual_review 决策 → 每个配置 webhook
+            # 的 ACTIVE 商户构造一条事件并调度投递任务
+            if (
+                result.decision in (Decision.DENY, Decision.REVIEW)
+                and webhook_merchant_ids
+            ):
+                event_type = (
+                    "transaction.rejected"
+                    if result.decision == Decision.DENY
+                    else "transaction.manual_review"
+                )
+                payload = {
+                    "decision_id": result.decision_id,
+                    "transaction_id": transaction_id,
+                    "external_tx_id": transaction.get("external_tx_id"),
+                    "amount": transaction.get("amount", 0),
+                    "currency": transaction.get("currency", "CNY"),
+                    "risk_score": result.risk_score,
+                    "risk_band": result.risk_band.value,
+                    "rule_hits": result.rule_hits,
+                }
+                for merchant_id in webhook_merchant_ids:
+                    event_id = await store_webhook_event(
+                        tenant_id=tenant_id,
+                        event_type=event_type,
+                        data=payload,
+                        webhook_id=merchant_id,
+                    )
+                    if event_id is None:
+                        continue
+                    self._send_task_safe(
+                        celery_app,
+                        "webhook.deliver",
+                        args=[event_id, merchant_id],
+                    )
         except Exception as exc:
             logger.warning("followup_tasks_dispatch_failed", error=str(exc))
 

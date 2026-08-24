@@ -27,6 +27,7 @@ celery_app = Celery(
         "app.workers.tasks_scoring",
         "app.workers.tasks_shap",
         "app.workers.tasks_pipl",
+        "app.workers.tasks_webhooks",
     ],
 )
 

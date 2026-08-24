@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -304,12 +305,98 @@ def generate_case(
         case_level=case_level,
         transaction_id=transaction_id,
     )
+    _notify_case_created(
+        tenant_id=tenant_id,
+        case_id=str(case.id),
+        case_no=case_no,
+        case_level=case_level,
+        transaction_id=transaction_id,
+        amount=int(score_data.get("amount", 0)),
+    )
     return {
         "status": "CREATED",
         "case_id": str(case.id),
         "case_level": case_level,
         "transaction_id": transaction_id,
     }
+
+
+def _notify_case_created(
+    *,
+    tenant_id: str,
+    case_id: str,
+    case_no: str,
+    case_level: str,
+    transaction_id: str,
+    amount: int,
+) -> None:
+    """建案成功后的通知扇出（fire-and-forget，失败仅告警）：
+
+    1. frd:ws_events 发布 case.created（前端实时刷新案件列表）
+    2. 构造 webhook_event（case.created）并按租户 ACTIVE webhook 商户
+       调度 webhook.deliver 投递
+    """
+    # structlog logger（支持 kwargs；模块级 stdlib task logger 的
+    # warning/error 不接受关键字上下文）
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+    payload = {
+        "case_id": case_id,
+        "case_no": case_no,
+        "level": case_level,
+        "status": "OPEN",
+        "transaction_id": transaction_id,
+        "amount": amount,
+    }
+    try:
+        asyncio.run(_notify_case_created_async(tenant_id, payload))
+    except Exception as exc:
+        logger.warning("case_created_notify_failed", case_no=case_no, error=str(exc))
+
+
+async def _notify_case_created_async(tenant_id: str, payload: dict[str, Any]) -> None:
+    """通知扇出的异步实现：WS 推送 + webhook 事件构造与调度。"""
+    from sqlalchemy import select
+
+    from app.core.logging import get_logger
+    from app.db.sync_session import sync_session_scope
+    from app.models.tenant import Merchant
+    from app.services.webhook import store_webhook_event
+    from app.services.ws_events import publish_ws_event
+
+    logger = get_logger(__name__)
+
+    # 1. WS 实时推送
+    await publish_ws_event(tenant_id, "case.created", payload)
+
+    # 2. Webhook 事件投递（eager 模式下不走 broker）
+    from app.workers.celery_app import celery_app
+
+    if celery_app.conf.task_always_eager:
+        return
+    with sync_session_scope(tenant_id) as session:
+        rows = session.execute(
+            select(Merchant.id).where(
+                Merchant.tenant_id == uuid.UUID(tenant_id),
+                Merchant.webhook_url.isnot(None),
+                Merchant.status == "ACTIVE",
+            )
+        )
+        merchant_ids = [str(m) for m in rows.scalars().all()]
+    for merchant_id in merchant_ids:
+        event_id = await store_webhook_event(
+            tenant_id=tenant_id,
+            event_type="case.created",
+            data=payload,
+            webhook_id=merchant_id,
+        )
+        if event_id is None:
+            continue
+        try:
+            celery_app.send_task("webhook.deliver", args=[event_id, merchant_id])
+        except Exception as exc:
+            logger.warning("celery_send_task_failed", task="webhook.deliver", error=str(exc))
 
 
 @celery_app.task(

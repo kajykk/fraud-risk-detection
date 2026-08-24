@@ -11,8 +11,13 @@ from app.services.webhook import validate_webhook_secret, validate_webhook_url
 
 
 class WebhookCreate(BaseModel):
-    """POST /webhooks 请求体（D05 §11.1）。"""
+    """POST /webhooks 请求体（D05 §11.1）。
 
+    merchant_id 显式指定配置写入的目标商户行；缺失/非法由端点
+    返回 400（INVALID_PARAMS），不走 Pydantic 必填（避免 422 语义）。
+    """
+
+    merchant_id: str | None = None
     url: str
     events: list[str]
     secret: str
@@ -32,9 +37,11 @@ class WebhookCreate(BaseModel):
 class WebhookUpdate(BaseModel):
     """PUT /webhooks/{id} 请求体（D05 §11.4）。
 
+    merchant_id 必须与路径 {id} 一致（缺失/不一致端点返回 400）。
     secret 可选：省略时保留原签名密钥（仅改 URL/事件无需重输 secret）。
     """
 
+    merchant_id: str | None = None
     url: str
     events: list[str]
     secret: str | None = None

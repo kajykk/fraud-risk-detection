@@ -203,19 +203,18 @@ async def _cache_shap_result(
 
 
 async def _publish_shap_ready_event(tenant_id: str, decision_id: str) -> None:
-    """发布 WebSocket 事件 transaction.shap_ready（D05 §2.8）。"""
-    try:
-        from app.db.redis import get_redis
+    """发布 WebSocket 事件 transaction.shap_ready（D05 §2.8）。
 
-        redis = get_redis()
-        event = {
-            "event_type": "transaction.shap_ready",
-            "tenant_id": tenant_id,
-            "data": {"decision_id": decision_id, "shap_status": "READY"},
-        }
-        await redis.publish("frd:ws_events", json.dumps(event))
-    except Exception as exc:
-        logger.warning("shap_event_publish_failed", error=str(exc))
+    复用 ws_events.publish_ws_event，保证消息结构完整对齐前端
+    WsMessage（event_id / event_type / tenant_id / occurred_at / data）。
+    """
+    from app.services.ws_events import publish_ws_event
+
+    await publish_ws_event(
+        tenant_id,
+        "transaction.shap_ready",
+        {"decision_id": decision_id, "shap_status": "READY"},
+    )
 
 
 __all__ = ["ShapTask", "cache_cleanup", "compute_shap"]

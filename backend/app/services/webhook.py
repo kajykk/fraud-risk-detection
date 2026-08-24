@@ -11,13 +11,18 @@ Header：
 防重放：timestamp 与当前时间差 > 5 分钟拒绝。
 
 重试策略（D05 §11.10）：
-- 5 次重试，退避间隔：1m / 5m / 30m / 2h / 12h
-- 5 次失败后入死信队列（保留 30 天）
+- 本模块仅负责单次投递（deliver_once）；指数退避重试由 Celery 任务
+  workers/tasks_webhooks.py 以 countdown 调度（60s/5m/30m/2h/12h 共 5 次），
+- 5 次失败后标记 dead_letter=True（Redis 事件记录保留 30 天）
+
+事件记录：
+- 待投递事件以 JSON 存于 Redis frd:webhook_event:{event_id}（TTL 30 天），
+  记录 tenant_id/event_type/data/webhook_id/status/attempts/dead_letter 等，
+  由 scoring/case 节点构造、Celery 任务消费。
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import hmac
@@ -37,10 +42,11 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# 重试退避间隔（秒）：即时 / 1m / 5m / 30m / 2h / 12h
-RETRY_INTERVALS = [0, 60, 300, 1800, 7200, 43200]
-MAX_ATTEMPTS = 5
 TIMESTAMP_TOLERANCE_SECONDS = 300  # 5 分钟
+
+# Webhook 事件记录（Redis）
+WEBHOOK_EVENT_KEY_PREFIX = "frd:webhook_event"
+WEBHOOK_EVENT_TTL_SECONDS = 30 * 24 * 3600  # 死信保留 30 天
 
 # Webhook 目标校验（SSRF 防护）
 WEBHOOK_MIN_SECRET_LENGTH = 16
@@ -195,21 +201,33 @@ class WebhookService:
         ).hexdigest()
         return hmac.compare_digest(expected, v1)
 
-    async def deliver(
+    async def deliver_once(
         self,
+        *,
         webhook_url: str,
         webhook_secret: str,
         event_id: str,
         event_type: str,
         tenant_id: str,
         data: dict[str, Any],
+        attempt_no: int = 1,
+        delivery_id: str | None = None,
     ) -> dict[str, Any]:
-        """投递 Webhook（含 5 次重试，失败入死信队列）。
+        """单次投递（不含重试）：成功/失败均立即返回，退避调度由 Celery 任务负责。
 
         Returns:
-            投递结果 dict，含 delivery_id / status / attempts
+            {
+              "delivery_id": str,
+              "status": "SUCCESS" | "FAILED",
+              "permanent": bool,        # 4xx 等不可恢复失败，无需重试
+              "response_code": int|None,
+              "latency_ms": int|None,
+              "sent_at": str,           # ISO UTC
+              "error": str|None,
+            }
         """
-        delivery_id = f"dlv_{uuid.uuid4()}"
+        delivery_id = delivery_id or f"dlv_{uuid.uuid4()}"
+        sent_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         # 投递前再做一次 URL 校验（纵深防御：抵御创建后 URL 被篡改/陈旧数据）
         try:
             webhook_url = validate_webhook_url(webhook_url)
@@ -217,92 +235,166 @@ class WebhookService:
             logger.error("webhook_url_invalid_on_delivery", delivery_id=delivery_id, error=str(exc))
             return {
                 "delivery_id": delivery_id,
-                "status": "DEAD_LETTERED",
-                "attempts": [{
-                    "attempt_no": 1,
-                    "sent_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "response_code": None,
-                    "next_retry_at": None,
-                }],
-                "delivered_at": None,
-                "dead_lettered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "dead_letter_reason": f"URL_VALIDATION_FAILED: {exc}",
+                "status": "FAILED",
+                "permanent": True,
+                "response_code": None,
+                "latency_ms": None,
+                "sent_at": sent_at,
+                "error": f"URL_VALIDATION_FAILED: {exc}",
             }
+
         body_dict = {
             "event_id": event_id,
             "event_type": event_type,
             "tenant_id": tenant_id,
-            "occurred_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "delivery_attempt": 1,
+            "occurred_at": sent_at,
+            "delivery_attempt": attempt_no,
             "data": data,
         }
         body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
         timestamp = int(time.time())
         signature_header = self.sign(webhook_secret, body, timestamp)
 
-        attempts: list[dict[str, Any]] = []
-        for attempt_no in range(1, MAX_ATTEMPTS + 1):
-            sent_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.post(
-                        webhook_url,
-                        content=body,
-                        headers={
-                            "X-FRD-Signature": signature_header,
-                            "X-FRD-Timestamp": str(timestamp),
-                            "Content-Type": "application/json",
-                        },
-                    )
-                if response.status_code >= 500 and attempt_no < MAX_ATTEMPTS:
-                    raise RuntimeError(f"upstream error: {response.status_code}")
-                attempts.append({
-                    "attempt_no": attempt_no,
-                    "sent_at": sent_at,
-                    "response_code": response.status_code,
-                    "latency_ms": response.elapsed.total_seconds() * 1000,
-                    "next_retry_at": None,
-                })
-                if response.status_code < 500:
-                    return {
-                        "delivery_id": delivery_id,
-                        "status": "SUCCESS",
-                        "attempts": attempts,
-                        "delivered_at": sent_at,
-                    }
-            except Exception as exc:
-                logger.warning(
-                    "webhook_deliver_failed",
-                    delivery_id=delivery_id,
-                    attempt_no=attempt_no,
-                    error=str(exc),
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    webhook_url,
+                    content=body,
+                    headers={
+                        "X-FRD-Signature": signature_header,
+                        "X-FRD-Timestamp": str(timestamp),
+                        "Content-Type": "application/json",
+                    },
                 )
-            next_interval = RETRY_INTERVALS[attempt_no] if attempt_no < MAX_ATTEMPTS else None
-            next_retry_at = (
-                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + next_interval))
-                if next_interval
-                else None
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            logger.warning(
+                "webhook_deliver_failed",
+                delivery_id=delivery_id,
+                attempt_no=attempt_no,
+                error=str(exc),
             )
-            attempts.append({
-                "attempt_no": attempt_no,
-                "sent_at": sent_at,
+            return {
+                "delivery_id": delivery_id,
+                "status": "FAILED",
+                "permanent": False,
                 "response_code": None,
-                "next_retry_at": next_retry_at,
-            })
-            if attempt_no < MAX_ATTEMPTS:
-                await asyncio.sleep(0)  # 实际应使用 Celery 延时任务
+                "latency_ms": latency_ms,
+                "sent_at": sent_at,
+                "error": str(exc),
+            }
 
-        # 入死信队列
-        dead_lettered_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        logger.error("webhook_dead_lettered", delivery_id=delivery_id, webhook_url=webhook_url)
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        status_code = response.status_code
+        # 5xx/网络错误 → 可重试；4xx → 永久失败（目标侧问题，重试无意义）
+        permanent = 400 <= status_code < 500
+        success = status_code < 400
+        if not success:
+            logger.warning(
+                "webhook_deliver_failed",
+                delivery_id=delivery_id,
+                attempt_no=attempt_no,
+                response_code=status_code,
+            )
         return {
             "delivery_id": delivery_id,
-            "status": "DEAD_LETTERED",
-            "attempts": attempts,
-            "delivered_at": None,
-            "dead_lettered_at": dead_lettered_at,
-            "dead_letter_reason": "MAX_RETRY_EXCEEDED",
+            "status": "SUCCESS" if success else "FAILED",
+            "permanent": permanent,
+            "response_code": status_code,
+            "latency_ms": latency_ms,
+            "sent_at": sent_at,
+            "error": None if success else f"upstream error: {status_code}",
         }
+
+
+# --------------------------------------------------------------------------- #
+# Webhook 事件记录（Redis 存储，供 Celery 任务消费）
+# --------------------------------------------------------------------------- #
+def _webhook_event_key(event_id: str) -> str:
+    return f"{WEBHOOK_EVENT_KEY_PREFIX}:{event_id}"
+
+
+async def store_webhook_event(
+    *,
+    tenant_id: str,
+    event_type: str,
+    data: dict[str, Any],
+    webhook_id: str,
+) -> str | None:
+    """落一条待投递 Webhook 事件记录，返回 event_id；Redis 失败返回 None。
+
+    记录结构：
+        {event_id, tenant_id, event_type, data, webhook_id, status: PENDING,
+         attempts: 0, dead_letter: False, dead_letter_reason: null,
+         last_delivery_at: null, created_at}
+    """
+    event_id = f"evt_{uuid.uuid4()}"
+    record: dict[str, Any] = {
+        "event_id": event_id,
+        "tenant_id": str(tenant_id),
+        "event_type": event_type,
+        "data": data,
+        "webhook_id": str(webhook_id),
+        "status": "PENDING",
+        "attempts": 0,
+        "dead_letter": False,
+        "dead_letter_reason": None,
+        "last_response_code": None,
+        "last_delivery_at": None,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        from app.db.redis import get_redis
+
+        await get_redis().set(
+            _webhook_event_key(event_id),
+            json.dumps(record, ensure_ascii=False, default=str),
+            ex=WEBHOOK_EVENT_TTL_SECONDS,
+        )
+        return event_id
+    except Exception as exc:
+        logger.warning("webhook_event_store_failed", error=str(exc), event_type=event_type)
+        return None
+
+
+async def get_webhook_event(event_id: str) -> dict[str, Any] | None:
+    """读取事件记录；不存在 / Redis 失败返回 None。"""
+    try:
+        from app.db.redis import get_redis
+
+        raw = await get_redis().get(_webhook_event_key(event_id))
+        if raw is None:
+            return None
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        logger.warning("webhook_event_load_failed", event_id=event_id, error=str(exc))
+        return None
+
+
+async def update_webhook_event(event_id: str, **fields: Any) -> None:
+    """合并更新事件记录字段（读改写；失败仅告警，不阻塞任务）。"""
+    try:
+        from app.db.redis import get_redis
+
+        redis = get_redis()
+        key = _webhook_event_key(event_id)
+        raw = await redis.get(key)
+        if raw is None:
+            logger.warning("webhook_event_update_missing", event_id=event_id)
+            return
+        record = json.loads(raw)
+        if isinstance(record, dict):
+            record.update(fields)
+            ttl = await redis.ttl(key)
+            await redis.set(
+                key,
+                json.dumps(record, ensure_ascii=False, default=str),
+                ex=ttl if ttl and ttl > 0 else WEBHOOK_EVENT_TTL_SECONDS,
+            )
+    except Exception as exc:
+        logger.warning("webhook_event_update_failed", event_id=event_id, error=str(exc))
 
 
 # 单例
@@ -310,12 +402,15 @@ webhook_service = WebhookService()
 
 
 __all__ = [
-    "MAX_ATTEMPTS",
-    "RETRY_INTERVALS",
     "TIMESTAMP_TOLERANCE_SECONDS",
+    "WEBHOOK_EVENT_KEY_PREFIX",
+    "WEBHOOK_EVENT_TTL_SECONDS",
     "WebhookService",
     "decrypt_webhook_secret",
     "encrypt_webhook_secret",
+    "get_webhook_event",
+    "store_webhook_event",
+    "update_webhook_event",
     "validate_webhook_secret",
     "validate_webhook_url",
     "webhook_service",

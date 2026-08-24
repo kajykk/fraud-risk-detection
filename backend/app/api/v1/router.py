@@ -16,6 +16,7 @@ from app.api.v1 import (
     scores,
     transactions,
     webhooks,
+    ws,
 )
 
 router = APIRouter()
@@ -30,5 +31,7 @@ router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 router.include_router(gnn.router, prefix="/gnn", tags=["gnn"])
 router.include_router(pipl.router, prefix="/pipl", tags=["pipl"])
 router.include_router(reports.router, prefix="/reports", tags=["reports"])
+# WebSocket 实时推送（路径 /api/v1/ws，鉴权走 query token，不走 REST 依赖）
+router.include_router(ws.router, tags=["websocket"])
 
 __all__ = ["router"]

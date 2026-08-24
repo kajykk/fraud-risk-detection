@@ -332,12 +332,22 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        # 仅提取可序列化字段：errors[].ctx 可能携带 ValueError 等异常对象，
+        # 直接透传会导致 JSONResponse 序列化失败（500）
+        errors = [
+            {
+                "loc": list(item.get("loc", [])),
+                "msg": str(item.get("msg", "")),
+                "type": str(item.get("type", "")),
+            }
+            for item in exc.errors()
+        ]
         return _build_error_response(
             request,
             code="INVALID_PARAMS",
             message="request validation failed",
             http_status=422,
-            data={"errors": exc.errors()},
+            data={"errors": errors},
         )
 
     @app.exception_handler(Exception)

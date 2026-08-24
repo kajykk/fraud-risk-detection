@@ -68,6 +68,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     rules_reload_task = asyncio.create_task(rule_engine.listen_reload())
 
+    # WebSocket 实时推送订阅：消费 frd:ws_events，按事件内 tenant_id 过滤
+    # 转发给 /api/v1/ws 的在线连接（断线自动重连，失败不阻断启动）。
+    from app.services.ws_events import listen_ws_events
+
+    ws_events_task = asyncio.create_task(listen_ws_events())
+
     logger.info("app_startup_complete")
     yield
 
@@ -75,6 +81,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     rules_reload_task.cancel()
     try:
         await rules_reload_task
+    except asyncio.CancelledError:
+        pass
+    ws_events_task.cancel()
+    try:
+        await ws_events_task
     except asyncio.CancelledError:
         pass
     await close_neo4j()
