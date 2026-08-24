@@ -108,8 +108,8 @@ jobs:
       POSTGRES_PASSWORD: frd_dev_password
       REDIS_HOST: localhost
       REDIS_PORT: 6379
-      APP_SECRET_KEY: ${{ github.run_id }}
-      JWT_SECRET_KEY: ${{ github.sha }}
+      APP_SECRET_KEY: ${{ format('ci-test-app-secret-{0}-{1}', github.run_id, github.sha) }}
+      JWT_SECRET_KEY: ${{ format('ci-test-jwt-secret-{0}-{1}', github.run_id, github.sha) }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.12
