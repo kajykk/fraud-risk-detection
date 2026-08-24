@@ -35,9 +35,9 @@ class Case(Base, PKMixin, TenantMixin):
     )
     score_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     case_no: Mapped[str] = mapped_column(String(50), nullable=False)
-    # type: FRAUD / AML / CHARGEBACK
+    # 枚举：FRAUD / AML / CHARGEBACK
     type: Mapped[str] = mapped_column(String(30), nullable=False)
-    # level: P0 / P1 / P2 / P3
+    # 等级：P0 / P1 / P2 / P3
     level: Mapped[str] = mapped_column(String(10), nullable=False)
     # status: OPEN / IN_REVIEW / CONFIRMED / CLOSED / FALSE_ALARM
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="OPEN")

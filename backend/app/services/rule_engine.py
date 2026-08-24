@@ -17,6 +17,8 @@ DSL 语法（expr := or_expr）：
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import re
 import time
@@ -34,6 +36,7 @@ from app.models.rule import Rule, RuleVersion
 logger = get_logger(__name__)
 
 _RULES_CACHE_TTL = 300  # 5 分钟
+_RULES_RELOAD_CHANNEL = "frd:rules_reload"
 
 # 表达式最大括号嵌套深度（防递归下降栈溢出）
 _MAX_PARSE_DEPTH = 64
@@ -439,24 +442,88 @@ class RuleEngine:
             logger.warning("rule_cache_read_failed", error=str(exc))
         return await self._load_rules_from_store(tenant_id)
 
-    async def hot_reload(self, tenant_id: str) -> None:
-        """热更新规则（Redis pubsub 触发缓存失效）。"""
+    def invalidate_cache(self, tenant_id: str | None = None) -> int:
+        """失效进程内规则编译缓存。
+
+        tenant_id 非空时仅失效该租户（含全局前缀匹配），为空时全量失效。
+        返回清除的缓存条数。供 API 写路径与 pubsub 监听共用，
+        保证多进程/多副本部署下各进程缓存一致。
+        """
+        prefix = f"rules:{tenant_id}:" if tenant_id else "rules:"
+        removed = 0
         for key in list(self._compiled_cache):
-            if key.startswith(f"rules:{tenant_id}:"):
+            if key.startswith(prefix):
                 self._compiled_cache.pop(key, None)
+                removed += 1
+        return removed
+
+    async def hot_reload(self, tenant_id: str) -> None:
+        """热更新规则：失效本进程缓存 + Redis pubsub 广播其他进程失效。"""
+        self.invalidate_cache(tenant_id)
         try:
             redis = get_redis()
             await redis.publish(
-                "frd:rules_reload",
+                _RULES_RELOAD_CHANNEL,
                 json.dumps({"tenant_id": tenant_id, "ts": time.time()}),
             )
         except Exception as exc:
             logger.warning("rule_pubsub_failed", error=str(exc))
         logger.info("rule_engine_hot_reload", tenant_id=tenant_id)
 
+    async def listen_reload(self) -> None:
+        """订阅 frd:rules_reload，收到广播后失效本进程规则编译缓存。
+
+        由 app lifespan 启动为后台协程；断线后指数退避重连，
+        取消（应用关闭）时静默退出。
+        """
+        while True:
+            pubsub = None
+            try:
+                pubsub = get_redis().pubsub()
+                await pubsub.subscribe(_RULES_RELOAD_CHANNEL)
+                logger.info("rules_reload_subscribed", channel=_RULES_RELOAD_CHANNEL)
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    tenant_id = _parse_reload_message(message.get("data"))
+                    removed = self.invalidate_cache(tenant_id)
+                    logger.info(
+                        "rules_cache_invalidated",
+                        tenant_id=tenant_id,
+                        keys_removed=removed,
+                        source="pubsub",
+                    )
+            except asyncio.CancelledError:
+                if pubsub is not None:
+                    with contextlib.suppress(Exception):
+                        await pubsub.aclose()
+                raise
+            except Exception as exc:
+                logger.warning("rules_reload_listener_retry", error=str(exc))
+                if pubsub is not None:
+                    with contextlib.suppress(Exception):
+                        await pubsub.aclose()
+                await asyncio.sleep(5)
+
+
+def _parse_reload_message(data: Any) -> str | None:
+    """解析 reload 消息中的 tenant_id；解析失败返回 None（全量失效）。"""
+    try:
+        payload = json.loads(data)
+        tenant_id = payload.get("tenant_id")
+        return str(tenant_id) if tenant_id else None
+    except (TypeError, ValueError):
+        return None
+
 
 # 单例
 rule_engine = RuleEngine()
 
 
-__all__ = ["RuleEngine", "RuleHit", "RuleResult", "rule_engine", "CompiledRule"]
+__all__ = [
+    "CompiledRule",
+    "RuleEngine",
+    "RuleHit",
+    "RuleResult",
+    "rule_engine",
+]

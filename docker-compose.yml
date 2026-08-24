@@ -96,11 +96,18 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       NEO4J_URI: bolt://neo4j:7687
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # Redis 已开启 requirepass：Celery broker/backend 需携带密码（与 .env REDIS_PASSWORD 一致）
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/2
       GNN_SERVICE_URL: http://gnn-serving:8502
-      # 服务间鉴权（与 gnn-serving/ml-serving 的 GNN_API_KEY/ML_API_KEY 保持一致；空则关闭）
+      # 服务间鉴权（与 gnn-serving 的 GNN_API_KEY 保持一致）：
+      # 可选项——留空则 gnn/ml 服务关闭鉴权（仅限本地开发），生产必须设置强随机值
       GNN_API_KEY: ${GNN_API_KEY:-}
+      # ML 评分路径：backend 调 ml-serving 三模态推理；auto=失败自动回退启发式
+      ML_ENGINE_MODE: ${ML_ENGINE_MODE:-auto}
+      ML_SERVICE_URL: http://ml-serving:8501
+      # 与 ml-serving 的 ML_API_KEY 保持一致（留空 = 关闭鉴权）
+      ML_API_KEY: ${ML_API_KEY:-}
     ports:
       - "8002:8000"
     depends_on:
@@ -135,8 +142,9 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       NEO4J_URI: bolt://neo4j:7687
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 与 backend 保持一致：broker/backend 携带 Redis 密码
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/2
     depends_on:
       - backend
       - redis
@@ -161,8 +169,9 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 与 backend 保持一致：broker/backend 携带 Redis 密码
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/2
     depends_on:
       - worker
     volumes:
@@ -182,6 +191,7 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # 服务间鉴权：可选项——留空则关闭鉴权（仅限本地开发），生产必须设置强随机值
       ML_API_KEY: ${ML_API_KEY:-}
     ports:
       - "8501:8501"
@@ -202,6 +212,7 @@ services:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: ${NEO4J_USER:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      # 服务间鉴权：可选项——留空则关闭鉴权（仅限本地开发），生产必须设置强随机值
       GNN_API_KEY: ${GNN_API_KEY:-}
     ports:
       - "8502:8502"

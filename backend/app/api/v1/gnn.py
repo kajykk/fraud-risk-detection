@@ -5,22 +5,22 @@
 - POST /gnn/community-detection：触发团伙检测（GNN 侧同步执行）
 - GET /gnn/community-detection/{task_id}：查询任务状态（占位，GNN 侧同步）
 - GET /gnn/community/{community_id}：查询团伙详情（占位，GNN 侧同步）
-
 说明：无本地表，请求透传到 GNN 推理服务（settings.gnn_service_url）。
 为对齐 GNN 服务契约（gnn/main.py POST + JSON body），一律使用 POST 且
-透传 tenant_id；服务不可用或 4xx/5xx 时返回空结构占位。
+透传 tenant_id；服务不可用或 4xx/5xx 时：
+- related / embedding：返回空结构占位（查询类，允许降级）；
+- community-detection：返回 503 + status=FAILED（不伪造 task_id，
+  避免调用方基于假任务号轮询一个永不存在的任务）。
 """
 
 from __future__ import annotations
-
-import uuid
 
 import httpx
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_tenant_id, require_scope
 from app.config import settings
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ServiceUnavailableError
 from app.schemas.common import ApiResponse
 
 router = APIRouter()
@@ -130,13 +130,14 @@ async def community_detection(
             payload[key] = body[key]
     status, data = await _call_gnn("/v1/graph/community", json_body=payload)
     if status == 0 or status >= 400:
-        return ApiResponse(
+        # GNN 故障：如实返回 503 + FAILED，不伪造 task_id/RUNNING
+        raise ServiceUnavailableError(
+            f"gnn community detection unavailable (upstream status={status or 'network_error'})",
             data={
-                "task_id": f"gnn_task_{uuid.uuid4()}",
-                "status": "RUNNING",
-                "estimated_seconds": 60,
+                "status": "FAILED",
+                "node_id": node_id,
                 "callback_event": body.get("callback_event", "gang.detected"),
-            }
+            },
         )
     return ApiResponse(data=data)
 

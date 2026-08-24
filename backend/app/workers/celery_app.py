@@ -10,7 +10,6 @@
 - scoring.*     → queue=scoring   （评分持久化，高吞吐）
 - shap.*        → queue=shap      （SHAP 计算，CPU 密集）
 - pipl.*        → queue=pipl      （PIPL 合规任务，低优先级）
-- cleanup.*     → queue=cleanup   （定时清理）
 """
 
 from __future__ import annotations
@@ -62,7 +61,6 @@ celery_app.conf.update(
         "scoring.*": {"queue": "scoring"},
         "shap.*": {"queue": "shap"},
         "pipl.*": {"queue": "pipl"},
-        "cleanup.*": {"queue": "cleanup"},
     },
     task_default_queue="default",
     # 任务时间限制（秒）：soft → 触发 SoftTimeLimitExceeded；hard → 强制终止
@@ -87,12 +85,6 @@ celery_app.conf.update(
             "task": "shap.cache_cleanup",
             "schedule": crontab(hour=3, minute=0),
             "options": {"queue": "shap"},
-        },
-        # 审计日志归档：每周日 01:00
-        "audit-archive-weekly": {
-            "task": "cleanup.audit_archive",
-            "schedule": crontab(hour=1, minute=0, day_of_week=0),
-            "options": {"queue": "cleanup"},
         },
     },
 )

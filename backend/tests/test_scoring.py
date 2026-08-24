@@ -114,16 +114,19 @@ async def test_get_score_task_status(
     client: AsyncClient,
     auth_headers: dict[str, str],
 ) -> None:
-    """GET /transactions/score/tasks/{task_id} 返回任务状态。"""
+    """GET /transactions/score/tasks/{task_id} 对未知/未登记任务 fail-closed。
+
+    任务归属校验（fail-closed）：归属记录不存在或 Redis 异常一律拒绝，
+    防止跨租户伪造 task_id 探测任务状态。
+    """
     task_id = "score_task_test-12345"
     response = await client.get(
         f"/api/v1/transactions/score/tasks/{task_id}",
         headers=auth_headers,
     )
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["task_id"] == task_id
-    assert data["status"] in ("PENDING", "RUNNING")
+    assert response.status_code == 401
+    body = response.json()
+    assert body["code"] == "UNAUTHORIZED"
 
 
 @pytest.mark.asyncio

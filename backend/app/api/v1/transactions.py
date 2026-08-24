@@ -45,20 +45,23 @@ async def _record_task_owner(task_id: str, tenant_id: str) -> None:
 
 
 async def _task_belongs_to_tenant(task_id: str, tenant_id: str) -> bool:
-    """校验任务归属租户。
+    """校验任务归属租户（fail-closed）。
 
-    Redis 不可用时 fail-open（放行），与平台既有降级策略一致。
+    - owner 不存在（任务未登记/已过期/他租户伪造 ID）→ False；
+    - Redis 异常 → False：拒绝服务优于跨租户越权读取。
+    正常链路中任务归属在响应返回前已写入，不影响合法查询
+    （唯一代价：归属记录过期（TTL 1h）后同租户也无法续查该任务）。
     """
     try:
         from app.db.redis import get_redis
 
         owner = await get_redis().get(f"score_task:{task_id}")
         if owner is None:
-            return True
+            return False
         return owner == tenant_id
-    except Exception as exc:  # fail-open：Redis 故障不阻塞任务查询
-        logger.warning("score_task_owner_check_skipped", error=str(exc))
-        return True
+    except Exception as exc:  # fail-closed：Redis 故障不放行
+        logger.warning("score_task_owner_check_failed", error=str(exc))
+        return False
 
 
 @router.post("/score", response_model=ApiResponse[TransactionScoreResponse])
@@ -236,30 +239,29 @@ async def list_transactions(
     from app.models.transaction import Score, Transaction
 
     async with session_scope(tenant_id) as session:
+        # 过滤条件（count 与数据查询共用同一构造器，保证 total 与 items 一致）
+        filters = [Transaction.tenant_id == tenant_id]
+        if external_tx_id:
+            filters.append(Transaction.external_tx_id.ilike(f"%{external_tx_id}%"))
+        if decision:
+            filters.append(Score.decision == decision)
+        if risk_band:
+            filters.append(Score.risk_band == risk_band)
+
         # 构建基础查询：transactions JOIN scores
         base = (
             select(Transaction, Score)
             .outerjoin(Score, Score.transaction_id == Transaction.id)
-            .where(Transaction.tenant_id == tenant_id)
+            .where(*filters)
         )
 
-        # 过滤条件
-        if external_tx_id:
-            base = base.where(Transaction.external_tx_id.ilike(f"%{external_tx_id}%"))
-        if decision:
-            base = base.where(Score.decision == decision)
-        if risk_band:
-            base = base.where(Score.risk_band == risk_band)
-
-        # 总数
+        # 总数：与数据查询使用相同的 JOIN + 过滤（按交易去重，防止一对多膨胀）
         count_q = (
-            select(func.count())
+            select(func.count(func.distinct(Transaction.id)))
             .select_from(Transaction)
-            .where(Transaction.tenant_id == tenant_id)
+            .outerjoin(Score, Score.transaction_id == Transaction.id)
+            .where(*filters)
         )
-        if external_tx_id:
-            count_q = count_q.where(Transaction.external_tx_id.ilike(f"%{external_tx_id}%"))
-
         total_result = await session.execute(count_q)
         total = total_result.scalar() or 0
 

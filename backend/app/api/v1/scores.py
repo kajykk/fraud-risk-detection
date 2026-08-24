@@ -46,10 +46,13 @@ def _tx_to_dict(tx: Transaction | None) -> dict:
 async def _load_score_with_tx(
     decision_id: str, tenant_id: str
 ) -> tuple[Score, Transaction | None]:
-    """加载 score + 关联 transaction（RLS 隔离）。"""
+    """加载 score + 关联 transaction（RLS 隔离 + 显式 tenant_id 过滤）。"""
     async with session_scope(tenant_id) as session:
         score_result = await session.execute(
-            select(Score).where(Score.id == uuid.UUID(decision_id))
+            select(Score).where(
+                Score.id == uuid.UUID(decision_id),
+                Score.tenant_id == uuid.UUID(tenant_id),
+            )
         )
         score = score_result.scalar_one_or_none()
         if score is None:
@@ -70,7 +73,10 @@ async def get_score(
     """查询评分详情。"""
     async with session_scope(tenant_id) as session:
         result = await session.execute(
-            select(Score).where(Score.id == uuid.UUID(decision_id))
+            select(Score).where(
+                Score.id == uuid.UUID(decision_id),
+                Score.tenant_id == uuid.UUID(tenant_id),
+            )
         )
         score = result.scalar_one_or_none()
         if score is None:
@@ -149,15 +155,19 @@ async def shap_result(
     async with session_scope(tenant_id) as session:
         result = await session.execute(
             select(ShapExplanation).where(
-                ShapExplanation.score_id == uuid.UUID(decision_id)
+                ShapExplanation.score_id == uuid.UUID(decision_id),
+                ShapExplanation.tenant_id == uuid.UUID(tenant_id),
             )
         )
         shap_record = result.scalar_one_or_none()
 
         if shap_record is None:
-            # 尝试自动计算
+            # 尝试自动计算（显式 tenant_id 过滤，防跨租户读取）
             score_result = await session.execute(
-                select(Score).where(Score.id == uuid.UUID(decision_id))
+                select(Score).where(
+                    Score.id == uuid.UUID(decision_id),
+                    Score.tenant_id == uuid.UUID(tenant_id),
+                )
             )
             score = score_result.scalar_one_or_none()
             if score is None:

@@ -122,7 +122,8 @@ networkPolicy:
 
 # ---------- 生产配置覆盖 ----------
 config:
-  APP_ENV: "production"
+  # 与 backend/app/config.py 的 APP_ENV Literal（local|dev|test|staging|prod）保持一致
+  APP_ENV: "prod"
   LOG_LEVEL: "INFO"
   OTEL_TRACES_SAMPLER_ARG: "0.1"   # 生产 10% 采样
 

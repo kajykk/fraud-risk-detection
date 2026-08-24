@@ -126,7 +126,14 @@ class ScoringOrchestrator:
         )
 
         # 5. DB 持久化（等待完成，保证评分可追溯；失败不阻断响应，内部已 catch）
-        await self._persist_to_db(tenant_id, transaction, result)
+        transaction_id, score_id = await self._persist_to_db(tenant_id, transaction, result)
+
+        # 5.1 异步跟进任务（评分持久化后条件投递，ADR-014）：
+        #     高风险（HIGH/CRITICAL）→ scoring.generate_case 自动建案；
+        #     全部 → shap.compute 异步解释。fire-and-forget，不阻塞响应。
+        self._dispatch_followup_tasks(
+            tenant_id, transaction, result, transaction_id, score_id
+        )
 
         # 6. Redis 缓存写入（等待完成；失败降级为仅响应，内部已 catch）
         await self._cache_score(tenant_id, transaction.get("external_tx_id", ""), result)
@@ -233,11 +240,14 @@ class ScoringOrchestrator:
         tenant_id: str,
         transaction: dict[str, Any],
         result: ScoreResult,
-    ) -> None:
-        """持久化交易 + 评分到 PostgreSQL（fire-and-forget）。
+    ) -> tuple[str | None, str | None]:
+        """持久化交易 + 评分到 PostgreSQL（失败不阻断主路径）。
 
         由于 Kafka Consumer 尚未实现，直接在主进程异步写入。
         生产环境应由 Kafka Consumer 消费（ADR-014）。
+
+        Returns:
+            (transaction_id, score_id)；持久化失败时返回 (None, None)。
         """
         try:
             from datetime import datetime
@@ -305,8 +315,72 @@ class ScoringOrchestrator:
                     external_tx_id=tx.external_tx_id,
                     decision=result.decision.value,
                 )
+                return str(tx.id), str(score.id)
         except Exception as exc:
             logger.warning("db_persist_failed", error=str(exc), tenant_id=tenant_id)
+            return None, None
+
+    def _dispatch_followup_tasks(
+        self,
+        tenant_id: str,
+        transaction: dict[str, Any],
+        result: ScoreResult,
+        transaction_id: str | None,
+        score_id: str | None,
+    ) -> None:
+        """评分持久化后的异步跟进任务投递（fire-and-forget）。
+
+        - risk_band ∈ {HIGH, CRITICAL} → scoring.generate_case（自动建案）
+        - 全部评分 → shap.compute（异步 SHAP 解释，结果缓存 24h）
+
+        按名 send_task 投递到 Celery broker；eager 模式（测试/单机内联）
+        或持久化失败（无主键）时不投递；broker 异常仅告警不阻断评分响应。
+        """
+        if transaction_id is None:
+            return
+        try:
+            from app.workers.celery_app import celery_app
+
+            if celery_app.conf.task_always_eager:
+                # 内联模式（测试/单机）：任务由显式调用触发，不走 broker 投递
+                return
+
+            if result.risk_band in (RiskBand.HIGH, RiskBand.CRITICAL):
+                self._send_task_safe(
+                    celery_app,
+                    "scoring.generate_case",
+                    args=[
+                        tenant_id,
+                        transaction_id,
+                        {
+                            "score_id": score_id,
+                            "risk_band": result.risk_band.value,
+                            "amount": transaction.get("amount", 0),
+                            "description": transaction.get("note_text"),
+                        },
+                    ],
+                )
+            self._send_task_safe(
+                celery_app,
+                "shap.compute",
+                args=[
+                    tenant_id,
+                    result.decision_id,
+                    score_id or "",
+                    {**transaction, "risk_score": result.risk_score},
+                    result.model_version,
+                ],
+            )
+        except Exception as exc:
+            logger.warning("followup_tasks_dispatch_failed", error=str(exc))
+
+    @staticmethod
+    def _send_task_safe(celery_app: Any, name: str, args: list[Any]) -> None:
+        """按名投递 Celery 任务；broker 不可用时仅告警。"""
+        try:
+            celery_app.send_task(name, args=args)
+        except Exception as exc:
+            logger.warning("celery_send_task_failed", task=name, error=str(exc))
 
     async def _cache_score(self, tenant_id: str, external_tx_id: str, result: ScoreResult) -> None:
         """Redis 缓存写入（score_cache:{tenant}:{tx_hash}，TTL 24h）。"""

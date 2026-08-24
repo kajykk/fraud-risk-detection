@@ -125,7 +125,8 @@ networkPolicy:
 
 # ---------- 非敏感配置（ConfigMap） ----------
 config:
-  APP_ENV: "production"
+  # 与 backend/app/config.py 的 APP_ENV Literal（local|dev|test|staging|prod）保持一致
+  APP_ENV: "prod"
   APP_NAME: "fraud-risk-detection"
   APP_VERSION: "1.1.0"
   LOG_LEVEL: "INFO"

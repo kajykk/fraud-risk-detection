@@ -30,7 +30,7 @@ class Tenant(Base, PKMixin, TimestampMixin):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     code: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
-    # type: BANK / PAYMENT / MERCHANT（基准 §3.6）
+    # 枚举：BANK / PAYMENT / MERCHANT（基准 §3.6）
     type: Mapped[str] = mapped_column(String(20), nullable=False, default="BANK")
     # plan: STANDARD / PRO / ENTERPRISE（基准 §3.6）
     plan: Mapped[str] = mapped_column(String(20), nullable=False, default="STANDARD")

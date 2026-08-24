@@ -1,4 +1,4 @@
-"""PIPL 数据主体权利路由（D05 §13，共 8 个接口）。
+﻿"""PIPL 数据主体权利路由（D05 §13，共 8 个接口）。
 
 - POST /pipl/consent：授予同意（§13.1）
 - POST /pipl/consent/withdraw：撤回同意（§13.2）
@@ -8,6 +8,10 @@
 - POST /pipl/deletion：申请数据删除（§13.6）
 - GET /pipl/deletion/{request_id}/status：查询删除状态（§13.7）
 - POST /pipl/rectification：数据更正请求（§13.8）
+
+Scope 约定（与 auth._default_scopes 角色矩阵统一为 pipl:* 命名）：
+- 读端点（查询状态）要求 pipl:read
+- 写端点（授予/撤回同意、导出/删除/更正申请）要求 pipl:write
 """
 
 from __future__ import annotations
@@ -88,7 +92,7 @@ def _deletion_to_out(request: DeletionRequest) -> DeletionStatusOut:
 async def grant_consent(
     req: ConsentCreate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("consent:write")),
+    _user: dict = Depends(require_scope("pipl:write")),
 ) -> ApiResponse[ConsentOut]:
     """记录用户同意（PIPL §14/§15/§17）。"""
     _check_verification_token(req.verification_token)
@@ -123,7 +127,7 @@ async def grant_consent(
 async def withdraw_consent(
     req: ConsentWithdraw,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("consent:write")),
+    _user: dict = Depends(require_scope("pipl:write")),
 ) -> ApiResponse[ConsentOut]:
     """撤回同意（PIPL §16）。"""
     _check_verification_token(req.verification_token)
@@ -153,7 +157,7 @@ async def get_consent(
     page: int = 1,
     page_size: int = 20,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("consent:write")),
+    _user: dict = Depends(require_scope("pipl:read")),
 ) -> ApiResponse[PageResponse[ConsentOut]]:
     """查询用户同意状态（PIPL §44 知情权）。"""
     async with session_scope(tenant_id) as session:
@@ -191,7 +195,7 @@ async def get_consent(
 async def request_data_export(
     req: DataExportRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("privacy:write")),
+    _user: dict = Depends(require_scope("pipl:write")),
 ) -> ApiResponse[DataExportStatusOut]:
     """申请数据可携带权导出（PIPL §45）。"""
     # TODO: 校验 verification_token + 投递 Celery 任务 tasks_pipl.export_data
@@ -211,7 +215,7 @@ async def request_data_export(
 async def data_export_status(
     task_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("privacy:write")),
+    _user: dict = Depends(require_scope("pipl:read")),
 ) -> ApiResponse[DataExportStatusOut]:
     """查询导出任务状态（无任务存储，预留返回 PROCESSING）。"""
     # TODO: 查 Celery result backend
@@ -228,7 +232,7 @@ async def data_export_status(
 async def request_deletion(
     req: DeletionRequestIn,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("privacy:write")),
+    _user: dict = Depends(require_scope("pipl:write")),
 ) -> ApiResponse[DeletionStatusOut]:
     """申请数据删除（被遗忘权，PIPL §47）。"""
     # TODO: 完整校验 verification_token（骨架阶段仅非空校验）+ 投递 Celery 任务
@@ -251,7 +255,7 @@ async def request_deletion(
 async def deletion_status(
     request_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("privacy:write")),
+    _user: dict = Depends(require_scope("pipl:read")),
 ) -> ApiResponse[DeletionStatusOut]:
     """查询删除请求状态。"""
     async with session_scope(tenant_id) as session:
@@ -271,7 +275,7 @@ async def deletion_status(
 async def request_rectification(
     req: RectificationRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("privacy:write")),
+    _user: dict = Depends(require_scope("pipl:write")),
 ) -> ApiResponse[RectificationStatusOut]:
     """数据更正请求（PIPL §46）。"""
     # TODO: 完整校验 verification_token（骨架阶段仅非空校验）

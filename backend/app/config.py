@@ -146,6 +146,27 @@ class GNNConfig(BaseSettings):
     gnn_api_key: str = ""
 
 
+class MLRemoteConfig(BaseSettings):
+    """ML 远程推理服务（ml-serving :8501）调用配置。
+
+    ML_ENGINE_MODE 三档：
+    - remote：仅调用 ml-serving POST /v1/score（三模态真实推理）
+    - heuristic：仅本地金额启发式，不发网络请求
+    - auto（默认）：先远程，超时/故障自动回退启发式并记录 warning
+    """
+
+    ml_engine_mode: Literal["remote", "heuristic", "auto"] = "auto"
+    # compose 内由 backend 环境变量注入 http://ml-serving:8501
+    ml_service_url: str = "http://localhost:8501"
+    # 与 ml-serving 的 ML_API_KEY 保持一致；为空则不携带 X-Api-Key 头
+    ml_api_key: str = ""
+    ml_connect_timeout_seconds: float = 2.0
+    ml_read_timeout_seconds: float = 5.0
+    # 远程调用轻量熔断器：连续失败 N 次后打开，冷却 M 秒后半开放行重试
+    ml_breaker_failure_threshold: int = 5
+    ml_breaker_recovery_seconds: float = 30.0
+
+
 class LLMConfig(BaseSettings):
     """LLM 配置（ADR-012，国内 API，PIPL 合规）。"""
 
@@ -179,6 +200,7 @@ class Settings(
     ScoringConfig,
     KillSwitchConfig,
     GNNConfig,
+    MLRemoteConfig,
     LLMConfig,
     TokenizationConfig,
 ):

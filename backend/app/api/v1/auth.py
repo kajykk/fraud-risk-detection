@@ -184,7 +184,14 @@ def _default_scopes(roles: list[str]) -> list[str]:
     role_scopes = {
         "TENANT_ADMIN": ["admin:*"],
         "MERCHANT_ADMIN": ["transaction:score", "transaction:read", "webhook:write"],
-        "RISK_ANALYST": ["transaction:score", "transaction:read", "case:read", "case:write"],
+        "RISK_ANALYST": [
+            "transaction:score",
+            "transaction:read",
+            "case:read",
+            "case:write",
+            "graph:read",
+            "graph:write",
+        ],
         "RISK_MANAGER": [
             "transaction:score",
             "transaction:read",
@@ -192,6 +199,8 @@ def _default_scopes(roles: list[str]) -> list[str]:
             "case:write",
             "rule:read",
             "rule:write",
+            "graph:read",
+            "graph:write",
         ],
         "AUDITOR": ["audit:read"],
         "COMPLIANCE_OFFICER": ["pipl:read", "pipl:write", "case:read"],

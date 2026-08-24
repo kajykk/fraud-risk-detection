@@ -90,6 +90,12 @@ class RateLimitedError(FRDError):
     message = "rate limited"
 
 
+class ServiceUnavailableError(FRDError):
+    code = "SERVICE_UNAVAILABLE"
+    http_status = 503
+    message = "downstream service unavailable"
+
+
 class CircuitOpenError(FRDError):
     code = "CIRCUIT_OPEN"
     http_status = 503
@@ -374,6 +380,7 @@ __all__ = [
     "RuleNotDeletableError",
     "RuleNotDraftError",
     "RuleStatusTransitionInvalidError",
+    "ServiceUnavailableError",
     "ShapComputationFailedError",
     "ShapExpiredError",
     "ShapNotReadyError",

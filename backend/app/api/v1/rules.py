@@ -33,7 +33,7 @@ from app.schemas.rule import (
     RuleVersionCreate,
     RuleVersionOut,
 )
-from app.services.rule_engine import validate_expression
+from app.services.rule_engine import rule_engine, validate_expression
 
 router = APIRouter()
 
@@ -268,7 +268,9 @@ async def update_rule(
             rule.expression = req.dsl
             version.expression = req.dsl
         rule.updated_at = datetime.now(UTC)
-        return ApiResponse(data=_rule_to_out(rule, version))
+    # 成功路径：失效进程内规则缓存并广播（DRAFT 表达式变更后保持缓存一致）
+    await rule_engine.hot_reload(tenant_id)
+    return ApiResponse(data=_rule_to_out(rule, version))
 
 
 @router.delete("/{rule_id}")
@@ -352,7 +354,9 @@ async def promote_rule(
                 )
                 .values(status=RuleStatus.RETIRED.value)
             )
-        return ApiResponse(data=_version_to_out(rule, version))
+    # 成功路径：失效进程内规则缓存并广播（CANARY/ACTIVE 变更立即生效）
+    await rule_engine.hot_reload(tenant_id)
+    return ApiResponse(data=_version_to_out(rule, version))
 
 
 @router.post("/{rule_id}/rollback", response_model=ApiResponse[RuleVersionOut])
@@ -396,7 +400,9 @@ async def rollback_rule(
         target.promoted_at = datetime.now(UTC)
         rule.current_version = target.version
         rule.updated_at = datetime.now(UTC)
-        return ApiResponse(data=_version_to_out(rule, target))
+    # 成功路径：失效进程内规则缓存并广播（回滚立即生效）
+    await rule_engine.hot_reload(tenant_id)
+    return ApiResponse(data=_version_to_out(rule, target))
 
 
 @router.get("/{rule_id}/hits", response_model=ApiResponse[PageResponse[dict]])

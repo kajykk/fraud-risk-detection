@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -60,10 +61,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("neo4j_init_failed", error=str(exc))
 
+    # 规则缓存 pubsub 监听：订阅 frd:rules_reload，收到广播后失效进程内
+    # 编译缓存（多副本部署下与 rules API 写路径的 hot_reload 保持一致）。
+    # 监听失败仅告警并自动重连，不阻断启动；规则缓存仍有 TTL 300s 兜底。
+    from app.services.rule_engine import rule_engine
+
+    rules_reload_task = asyncio.create_task(rule_engine.listen_reload())
+
     logger.info("app_startup_complete")
     yield
 
     logger.info("app_shutdown_begin")
+    rules_reload_task.cancel()
+    try:
+        await rules_reload_task
+    except asyncio.CancelledError:
+        pass
     await close_neo4j()
     await close_redis()
     await close_engine()

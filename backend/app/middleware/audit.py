@@ -3,6 +3,8 @@
 设计要点：
 - 仅记录写操作（POST/PUT/PATCH/DELETE）
 - 哈希链：sequence_no（Redis INCR，降级 DB MAX）+ sha256 链，落库 audit_logs
+- 审计写入通过 BackgroundTask 在响应发送后执行，不阻塞评分接口 P99；
+  请求处理异常（无 response 可挂载）时同步落库兜底，保证审计不丢
 - 审计写入失败仅记日志，不阻塞业务主路径
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import time
 
+from starlette.background import BackgroundTask as StarletteBackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
@@ -40,7 +43,15 @@ class AuditMiddleware(BaseHTTPMiddleware):
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
             if method in AUDITED_METHODS:
-                await self._emit_audit_log(request, response, duration_ms)
+                if response is not None:
+                    # 挂载为响应后台任务：响应发送给客户端后再落库，
+                    # 审计耗时不计入接口延迟（评分接口 P99 关键路径）
+                    response.background = StarletteBackgroundTask(
+                        self._emit_audit_log, request, response, duration_ms
+                    )
+                else:
+                    # call_next 抛异常（无 response）：同步兜底落库
+                    await self._emit_audit_log(request, response, duration_ms)
 
         return response  # type: ignore[return-value]
 

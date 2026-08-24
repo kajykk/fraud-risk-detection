@@ -30,6 +30,11 @@ RUN pip install --upgrade pip==24.2 \
 
 COPY . /app
 
+# 非 root 运行（容器安全基线）
+RUN groupadd -r frd && useradd -r -g frd -u 10001 frd \
+    && chown -R frd:frd /app
+USER frd
+
 ENV GNN_HOST=0.0.0.0 \
     GNN_PORT=8502 \
     GNN_WORKERS=2
