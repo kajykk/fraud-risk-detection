@@ -1,15 +1,19 @@
 # ============================================================
 # FRD Staging 部署流水线
 # 依据：FRD-D10-V1.1 §10 GitOps / §13 灰度发布
-# 触发：push 到 main
+# 触发：workflow_dispatch（手动触发，需预配 ACR/ArgoCD/kubeconfig 密钥）
 # 流程：同步镜像 → ArgoCD 同步 Helm Chart → 灰度检查（24h）
 # 灰度策略：5%(24h) → 25%(24h) → 100%(72h)
 # ============================================================
 name: Deploy to Staging
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '部署版本（留空自动取最近 tag）'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,13 +27,21 @@ jobs:
   sync-images:
     name: Sync Images to Staging
     runs-on: ubuntu-latest
-    if: github.event.head_commit.message != 'ci: skip staging deploy'
+    if: "github.event.head_commit.message != 'ci: skip staging deploy'"
     outputs:
       version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Preflight check (ACR secrets)
+        run: |
+          if [ -z "${{ secrets.ALIYUN_ACR_USERNAME }}" ] || [ -z "${{ secrets.ALIYUN_ACR_PASSWORD }}" ]; then
+            echo "::error::缺少 ALIYUN_ACR_USERNAME / ALIYUN_ACR_PASSWORD 仓库密钥，请先在 Repo Settings→Secrets and variables→Actions 配置后重试"
+            exit 1
+          fi
+          echo "ACR secrets OK"
 
       - name: Resolve latest tag
         id: meta
