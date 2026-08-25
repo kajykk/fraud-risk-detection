@@ -1,7 +1,7 @@
 """评分相关异步任务（D03 V1.1 §4.1 / ADR-014）。
 
 任务清单：
-- persist_score: 异步持久化评分到 scores 表（Kafka Consumer 触发）
+- persist_score: 异步持久化评分到 scores 表（备用任务；主路径已同步落库，ADR-016）
 - persist_transaction: 异步持久化交易到 transactions 表
 - generate_case: 高风险交易自动生成案件（risk_band=HIGH/CRITICAL）
 - drift_check: 模型漂移检测（每小时定时）
@@ -123,7 +123,7 @@ def persist_score(
     transaction_id: str,
     score_data: dict[str, Any],
 ) -> dict[str, Any]:
-    """异步持久化评分到 scores 表（Kafka Consumer 触发，D03 ADR-014）。"""
+    """异步持久化评分到 scores 表（备用任务；主路径已同步落库，ADR-016）。"""
     logger.info(
         "persist_score_begin",
         tenant_id=tenant_id,
@@ -172,7 +172,7 @@ def persist_transaction(
     tenant_id: str,
     transaction_data: dict[str, Any],
 ) -> dict[str, Any]:
-    """异步持久化交易到 transactions 表（Kafka Consumer 触发）。"""
+    """异步持久化交易到 transactions 表（备用任务；主路径已同步落库）。"""
     logger.info(
         "persist_transaction_begin",
         tenant_id=tenant_id,

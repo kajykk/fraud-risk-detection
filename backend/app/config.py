@@ -94,16 +94,6 @@ class JWTConfig(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
 
 
-class KafkaConfig(BaseSettings):
-    """Kafka 配置（D03 §5.3）。"""
-
-    kafka_bootstrap_servers: str = "localhost:9092"
-    kafka_topic_transactions: str = "frd.transactions"
-    kafka_topic_decisions: str = "frd.decisions"
-    kafka_topic_audit: str = "frd.audit_log"
-    kafka_consumer_group: str = "frd-scoring"
-
-
 class CeleryConfig(BaseSettings):
     """Celery 配置。"""
 
@@ -195,7 +185,6 @@ class Settings(
     RedisConfig,
     Neo4jConfig,
     JWTConfig,
-    KafkaConfig,
     CeleryConfig,
     ScoringConfig,
     KillSwitchConfig,

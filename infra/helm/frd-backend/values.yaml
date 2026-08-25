@@ -141,10 +141,6 @@ config:
   MODAL_FALLBACK_DEFAULT: "0.5"
   # 缓存
   REDIS_TTL_SECONDS: "86400"
-  # Kafka
-  KAFKA_TOPIC_TRANSACTIONS: "transactions"
-  KAFKA_TOPIC_EVENTS: "events"
-  KAFKA_TOPIC_AUDIT_LOG: "audit_log"
   # 依赖
   POSTGRES_HOST: "postgresql.frd-prod.svc.cluster.local"
   POSTGRES_PORT: "5432"

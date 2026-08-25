@@ -2,7 +2,7 @@
 
 任务分组：
 - celery_app: Celery 实例与配置
-- tasks_scoring: 评分异步持久化 / Kafka 消费写 DB
+- tasks_scoring: 自动建案 / 漂移检测 / 备用持久化任务
 - tasks_shap: SHAP 异步计算（D03 ADR-007）
 - tasks_pipl: PIPL 数据导出 / 删除 / 更正异步任务
 """

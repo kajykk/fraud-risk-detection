@@ -8,8 +8,8 @@
 3. 双轨决策融合 (5ms)
 4. Redis 缓存写入 (3ms)
 
-持久化策略（ADR-014 演进）：
-- DB 写入在主路径内 await（Kafka Consumer 落地前保证数据可追溯）
+持久化与事件外发（ADR-014 演进 / ADR-016 决策）：
+- DB 写入在主路径内 await（保证数据可追溯，无外部 MQ 依赖）
 - SHAP 计算：异步 Worker + 缓存 24h（ADR-007）
 - 案件生成：异步 Worker
 - Webhook 回调：异步可靠推送
@@ -72,9 +72,8 @@ class ScoringOrchestrator:
         2. Tokenization（5ms）
         3. 并行评分 asyncio.gather：Rule Engine || ML Engine（35ms）
         4. 双轨决策融合（5ms）
-        5. Redis 缓存写入（3ms）
-        6. Kafka 异步发布 fire-and-forget（2ms）
-        """
+5. Redis 缓存写入（3ms）
+"""
         start = time.perf_counter()
         decision_id = f"dec_{uuid.uuid4()}"
 
@@ -142,9 +141,6 @@ class ScoringOrchestrator:
 
         # 6. Redis 缓存写入（等待完成；失败降级为仅响应，内部已 catch）
         await self._cache_score(tenant_id, transaction.get("external_tx_id", ""), result)
-
-        # 7. Kafka 异步发布（ADR-014 骨架阶段仅 log）
-        await self._publish_to_kafka(tenant_id, transaction, result)
 
         logger.info(
             "score_sync_completed",
@@ -248,8 +244,8 @@ class ScoringOrchestrator:
     ) -> tuple[str | None, str | None, list[str]]:
         """持久化交易 + 评分到 PostgreSQL（失败不阻断主路径）。
 
-        由于 Kafka Consumer 尚未实现，直接在主进程异步写入。
-        生产环境应由 Kafka Consumer 消费（ADR-014）。
+        直接在评分主进程内 await 写入，不依赖外部消息队列
+        （ADR-016：MQ 外发延后）。
 
         Returns:
             (transaction_id, score_id, webhook_merchant_ids)；
@@ -475,25 +471,6 @@ class ScoringOrchestrator:
             await redis.set(key, json.dumps(payload), ex=settings.scoring_cache_ttl_seconds)
         except Exception as exc:
             logger.warning("cache_score_failed", error=str(exc))
-
-    async def _publish_to_kafka(
-        self,
-        tenant_id: str,
-        transaction: dict[str, Any],
-        result: ScoreResult,
-    ) -> None:
-        """Kafka 异步发布（fire-and-forget，ADR-014）。
-
-        TODO: 接入 aiokafka Producer，发布到 frd.transactions / frd.decisions / frd.audit_log 三个 topic。
-        骨架阶段仅 log。
-        """
-        logger.info(
-            "kafka_publish_skeleton",
-            tenant_id=tenant_id,
-            topic=settings.kafka_topic_transactions,
-            decision_id=result.decision_id,
-            note="TODO: integrate aiokafka producer",
-        )
 
 
 # 单例
