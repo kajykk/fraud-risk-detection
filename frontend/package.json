@@ -22,7 +22,7 @@
     "axios": "^1.7.0",
     "echarts": "^5.5.0",
     "vue-echarts": "^7.0.3",
-    "vis-network": "^9.1.0",
+    "vis-network": "^10.1.0",
     "vis-data": "^7.1.0",
     "@vueuse/core": "^11.0.0"
   },
