@@ -7,7 +7,7 @@ alembic==1.13.2
 pydantic==2.8.2
 pydantic-settings==2.4.0
 celery==5.4.0
-redis==5.0.8
+redis==8.1.0
 neo4j==5.23.1
 python-jose[cryptography]==3.5.0
 ecdsa==0.19.2
