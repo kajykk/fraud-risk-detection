@@ -33,6 +33,12 @@ backend_logs*.txt
 *.pyc
 *.pyo
 
+# Coverage 产物（CI 中生成并上传 Codecov，不入库）
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+
 # WorkBuddy
 .workbuddy/
 

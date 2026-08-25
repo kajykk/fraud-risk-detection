@@ -66,12 +66,13 @@ jobs:
         run: npx vue-tsc --noEmit
 
   # ---------- 后端测试：pytest + coverage ----------
-  # 阈值分阶段提升计划（当前基线 40%）：
-  #   阶段一（现在）：40%  —— 保住存量，防止回退
-  #   阶段二（Q4）  ：60%  —— 核心链路（scoring/rules/cases）补齐单测后
-  #   阶段三（长期）：85%  —— 与 D07 测试设计对齐
+  # 阈值分阶段提升计划：
+  #   阶段一：40%（已废弃）—— 保住存量，防止回退
+  #   阶段二（当前）：50% —— services 层定向补测后实测 71%，留出波动余量
+  #   阶段三（下一阶段）：60%+ —— api/v1 层（rules/models/reports/cases）补齐单测后提升
+  #   长期目标   ：85%  —— 与 D07 测试设计对齐
   test-backend:
-    name: Test Backend (pytest + coverage >= 40%)
+    name: Test Backend (pytest + coverage >= 50%)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -131,7 +132,7 @@ jobs:
             --cov=app \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
-            --cov-fail-under=40 \
+            --cov-fail-under=50 \
             --asyncio-mode=auto
       - name: Upload coverage artifact
         if: always()
@@ -140,6 +141,12 @@ jobs:
           name: backend-coverage
           path: backend/coverage.xml
           retention-days: 14
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: backend/coverage.xml
+          fail_ci_if_error: false
 
   # ---------- ML 服务检查：ruff + mypy + pytest ----------
   check-ml:

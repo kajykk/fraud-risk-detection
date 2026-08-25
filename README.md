@@ -7,6 +7,7 @@
 [![Vue 3](https://img.shields.io/badge/Vue_3+TS-Vite_6-42b883)](https://vuejs.org/)
 [![ML](https://img.shields.io/badge/ML-XGBoost_·_BERT_·_PyG-ff69b4)](https://pytorch.org/)
 [![Tests](https://img.shields.io/badge/Tests-57+-green)](.github/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/OWNER/fraud-risk-detection/branch/master/graph/badge.svg)](https://codecov.io/gh/OWNER/fraud-risk-detection)
 
 ---
 
