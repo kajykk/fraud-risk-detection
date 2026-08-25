@@ -114,6 +114,38 @@ CI 四阶段流水线（`ci.yml` / `security-scan.yml` / `build-images.yml` / `d
 3. **镜像发布** — 打 tag 自动构建 5 个镜像（backend / worker / frontend / ml / gnn），Trivy 拦截 HIGH/CRITICAL，Cosign 签名推送
 4. **金丝雀部署** — 推送 main 自动同步至 Staging，5% → 25% → 100% 逐步放量
 
+## 实时推送（WebSocket）
+
+前端经 **`GET /api/v1/ws?access_token={jwt}`** 建立连接（仅接受 access 类型 JWT，校验失败以 1008 关闭握手），服务端按事件内 `tenant_id` 隔离转发：
+
+- **订阅过滤**：连接后发送 `{"type": "subscribe", "event_types": [...]}` 按事件类型过滤（缺省接收全部）。
+- **心跳**：客户端每 30s 发送 JSON 帧 `{"type": "ping"}`，服务端回 `{"type": "pong"}`；非 JSON 帧忽略。
+- **事件类型**：
+
+| 事件 | 说明 |
+|---|---|
+| `transaction.analysis_completed` | 异步深度分析完成（评分落库后发布，可配合轮询任务查询接口） |
+| `case.created` | 高风险交易自动生成案件（前端实时刷新案件列表） |
+| `webhook.delivered` | Webhook 投递成功终态 |
+| `webhook.dead_letter` | Webhook 投递死信终态 |
+
+## Webhook 投递与死信
+
+- **签名与防重放**：HMAC-SHA256（`X-FRD-Signature: t={timestamp},v1={hex}`，覆盖 `{timestamp}.{body}`），时间戳偏差 > 5 分钟拒绝；签名密钥 Fernet 加密落库。目标 URL 强制 https 并做 SSRF 校验（公网 IP / DNS A 记录全检）。
+- **重试策略**：Celery 任务指数退避共 **5 次**——60s / 5m / 30m / 2h / 12h；瞬时失败（网络 / 5xx / 超时）按退避重试，永久失败（4xx、URL 校验不过、未配置）跳过重试直接死信。
+- **死信语义**：重试耗尽（`MAX_RETRY_EXCEEDED`）或永久失败 → 事件标记 `dead_letter=True`（Redis 事件记录保留 30 天）、写哈希链审计日志、向前端推送 `webhook.dead_letter` 实时事件。
+- **显式 merchant_id 配置要求**：Webhook 配置按商户行显式挂载——create/update 必须在请求体中携带 `merchant_id` 定位目标商户（缺失/非法 → 400，商户不存在或跨租户 → 404）；投递前商户须已配置 webhook_url 与签名密钥，否则直接判 `webhook_not_configured` 死信。
+
+## ML 评分引擎模式（ML_ENGINE_MODE）
+
+| 模式 | 行为 |
+|---|---|
+| `auto`（默认） | 先调 ml-serving(:8501) `POST /v1/score` 三模态推理；网络/超时/非 2xx → 记 warning 并自动回退本地启发式 |
+| `remote` | 仅远程推理，失败同样回退启发式（保证评分主路径可用） |
+| `heuristic` | 仅本地金额启发式，不发网络请求 |
+
+熔断参数（`MLRemoteConfig`）：连续失败 ≥ `ML_BREAKER_FAILURE_THRESHOLD`（默认 5）打开熔断，冷却 `ML_BREAKER_RECOVERY_SECONDS`(默认 30s) 后半开放行一次探测；远程调用 connect 2s / read 5s 超时。启发式回退时熔断模态降权至 0.05、缺省分 0.5，融合权重保持 0.6/0.2/0.2。
+
 ## 文档体系
 
 遵循完整软件工程生命周期，docs/ 下含 **D01-D11 共 11 份文档**（立项 / 需求 SRS / 架构 SAD / 数据库 / API 规范 / 用户手册 / 测试计划 / 进度 / 风险 / 部署 / 验收），全部基于跨文档修订基线（单一事实源）。见 [docs/README.md](docs/README.md)。
