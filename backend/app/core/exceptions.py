@@ -103,7 +103,14 @@ class CircuitOpenError(FRDError):
 
 
 class KillSwitchActiveError(FRDError):
-    code = "CIRCUIT_OPEN"
+    """Kill Switch 主动熔断（区别于被动 CircuitOpenError）。
+
+    独立 code 便于前端/运维区分"模型故障自动熔断"与
+    "人工/漂移触发的 Kill Switch"，二者处置路径不同。
+    （D05 文档下一修订版补充该错误码。）
+    """
+
+    code = "KILL_SWITCH_ACTIVE"
     http_status = 503
     message = "kill switch active"
 

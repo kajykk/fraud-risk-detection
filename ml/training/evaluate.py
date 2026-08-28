@@ -109,6 +109,37 @@ def aggregate_metrics(
     }
 
 
+def stratified_split(
+    labels: list[int],
+    val_ratio: float = 0.2,
+    random_state: int = 42,
+) -> tuple[list[int], list[int]]:
+    """分层切分样本索引 → (train_idx, val_idx)。
+
+    三个模态训练器对同一份 labels 使用同一 random_state 调用本函数，
+    即可得到完全一致的验证集索引（融合层 Stacking 的对齐前提）。
+
+    样本过少（<10）或只有单一类别时退化为"不切分"
+    （train_idx=全部, val_idx=空），调用方需自行回退到训练集评估并标注。
+    """
+    import numpy as np
+
+    n = len(labels)
+    idx = np.arange(n)
+    if n < 10 or len(set(labels)) < 2:
+        return idx.tolist(), []
+    try:
+        from sklearn.model_selection import train_test_split  # type: ignore
+
+        train_idx, val_idx = train_test_split(
+            idx, test_size=val_ratio, random_state=random_state, stratify=labels
+        )
+        return sorted(int(i) for i in train_idx), sorted(int(i) for i in val_idx)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("evaluate.stratified_split.failed", error=str(exc))
+        return idx.tolist(), []
+
+
 __all__ = [
     "compute_auc",
     "compute_f1",
@@ -116,4 +147,5 @@ __all__ = [
     "compute_precision_recall",
     "compute_confusion",
     "aggregate_metrics",
+    "stratified_split",
 ]

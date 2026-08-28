@@ -14,10 +14,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8
 
 # 系统依赖 + Python 3.12
+# 注：libgl1/libglib2.0-0 为 OpenCV 依赖，本项目未使用，已移除；
+# python3.12-dev 仅编译扩展需要，全部依赖均有 wheel，无需保留。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-distutils python3.12-dev \
+        python3.12 python3.12-distutils \
         python3-pip curl ca-certificates \
-        libgomp1 libgl1 libglib2.0-0 \
+        libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && ln -sf /usr/bin/python3.12 /usr/bin/python3

@@ -11,19 +11,23 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.deps import get_tenant_id, require_scope
 from app.core.exceptions import NotFoundError, UnauthorizedError
 from app.core.logging import get_logger
-from app.schemas.common import ApiResponse
+from app.schemas.common import ApiResponse, Decision, RiskBand  # noqa: F401  (get_transaction 使用)
 from app.schemas.transaction import (
     AsyncScoreResponse,
     BatchScoreRequest,
     BatchScoreResponse,
     BatchScoreResultItem,
+    Explainability,
     FeedbackRequest,
+    RuleHit,
     TransactionDetail,
     TransactionScoreRequest,
     TransactionScoreResponse,
@@ -58,7 +62,7 @@ async def _task_belongs_to_tenant(task_id: str, tenant_id: str) -> bool:
         owner = await get_redis().get(f"score_task:{task_id}")
         if owner is None:
             return False
-        return owner == tenant_id
+        return str(owner) == tenant_id
     except Exception as exc:  # fail-closed：Redis 故障不放行
         logger.warning("score_task_owner_check_failed", error=str(exc))
         return False
@@ -69,7 +73,7 @@ async def score_transaction(
     req: TransactionScoreRequest,
     request: Request,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:score")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[TransactionScoreResponse]:
     """实时交易评分（核心接口，P99 < 200ms）。"""
     tx_dict = req.model_dump(mode="json")
@@ -80,8 +84,8 @@ async def score_transaction(
             risk_score=result.risk_score,
             risk_band=result.risk_band,
             model_version=result.model_version,
-            rule_hits=result.rule_hits,
-            explainability=result.explainability,
+            rule_hits=[RuleHit(**hit) for hit in result.rule_hits],
+            explainability=Explainability(**result.explainability),
             latency_ms=result.latency_ms,
             case_id=result.case_id,
             decision_id=result.decision_id,
@@ -93,7 +97,7 @@ async def score_transaction(
 async def score_async(
     req: TransactionScoreRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:score")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[AsyncScoreResponse]:
     """异步评分（深度分析，含 GNN 团伙检测）。"""
     from app.workers.celery_app import celery_app
@@ -120,12 +124,12 @@ async def score_async(
     )
 
 
-@router.get("/score/tasks/{task_id}", response_model=ApiResponse[dict])
+@router.get("/score/tasks/{task_id}", response_model=ApiResponse[dict[str, Any]])
 async def get_score_task(
     task_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:score")),
-) -> ApiResponse[dict]:
+    _user: dict[str, Any] = Depends(require_scope("transaction:score")),
+) -> ApiResponse[dict[str, Any]]:
     """查询异步评分任务状态（限定属于当前租户的任务）。"""
     if not await _task_belongs_to_tenant(task_id, tenant_id):
         raise UnauthorizedError("task not found or not owned by this tenant")
@@ -143,7 +147,7 @@ async def get_score_task(
     else:
         status = result.state
 
-    payload: dict = {"task_id": task_id, "status": status}
+    payload: dict[str, Any] = {"task_id": task_id, "status": status}
     if result.successful() and isinstance(result.result, dict):
         payload.update(result.result)
     elif result.failed() and isinstance(result.result, BaseException):
@@ -155,12 +159,12 @@ async def get_score_task(
 async def score_batch(
     req: BatchScoreRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:score")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:score")),
 ) -> ApiResponse[BatchScoreResponse]:
     """批量评分（最多 100 条/批，并发执行）。"""
     from app.schemas.common import Decision, RiskBand
 
-    async def _score_one(tx: dict) -> BatchScoreResultItem:
+    async def _score_one(tx: dict[str, Any]) -> BatchScoreResultItem:
         try:
             result = await scoring_orchestrator.score_sync(tx, tenant_id)
             return BatchScoreResultItem(
@@ -190,12 +194,12 @@ async def score_batch(
     )
 
 
-@router.post("/feedback", response_model=ApiResponse[dict])
+@router.post("/feedback", response_model=ApiResponse[dict[str, Any]])
 async def feedback(
     req: FeedbackRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:score")),
-) -> ApiResponse[dict]:
+    _user: dict[str, Any] = Depends(require_scope("transaction:score")),
+) -> ApiResponse[dict[str, Any]]:
     """反馈真实欺诈标签（用于模型再训练）。"""
     from sqlalchemy import select
 
@@ -222,16 +226,16 @@ async def feedback(
     return ApiResponse(data={"status": "accepted", "external_tx_id": req.external_tx_id})
 
 
-@router.get("", response_model=ApiResponse[dict])
+@router.get("", response_model=ApiResponse[dict[str, Any]])
 async def list_transactions(
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:read")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:read")),
     external_tx_id: str | None = None,
     decision: str | None = None,
     risk_band: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> ApiResponse[dict]:
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+) -> ApiResponse[dict[str, Any]]:
     """交易列表查询（D05 §5.3）。"""
     from sqlalchemy import desc, func, select
 
@@ -278,6 +282,8 @@ async def list_transactions(
                 "tx_type": tx.tx_type,
                 "channel": tx.channel,
                 "is_3ds_verified": tx.is_3ds_verified,
+                # 金额直接取交易表列（分），不依赖 metadata 是否写入
+                "amount": tx.amount,
                 "user_created_at": None,
                 "acquirer_id": None,
                 "shipping_country": None,
@@ -313,7 +319,7 @@ async def list_transactions(
 async def get_transaction(
     external_tx_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:read")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:read")),
 ) -> ApiResponse[TransactionDetail]:
     """查询交易评分详情。"""
     from sqlalchemy import select
@@ -340,16 +346,16 @@ async def get_transaction(
         return ApiResponse(
             data=TransactionDetail(
                 external_tx_id=tx.external_tx_id,
-                decision=sc.decision if sc else "ALLOW",
+                decision=Decision(str(sc.decision)) if sc else Decision.ALLOW,
                 risk_score=float(sc.risk_score) if sc else 0.0,
-                risk_band=sc.risk_band if sc else "LOW",
-                model_version=sc.model_version if sc else "unknown",
-                rule_hits=sc.rule_hits if sc else [],
-                explainability={
-                    "model_contribution": 0.65,
-                    "rule_contribution": 0.35,
-                    "shap_status": "PENDING",
-                },
+                risk_band=RiskBand(str(sc.risk_band)) if sc else RiskBand.LOW,
+                model_version=str(sc.model_version) if sc else "unknown",
+                rule_hits=[RuleHit(**hit) for hit in (sc.rule_hits if sc else [])],
+                explainability=Explainability(
+                    model_contribution=0.65,
+                    rule_contribution=0.35,
+                    shap_status="PENDING",
+                ),
                 tx_type=tx.tx_type,
                 channel=tx.channel,
                 is_3ds_verified=tx.is_3ds_verified,
@@ -359,6 +365,6 @@ async def get_transaction(
                 billing_country=None,
                 case_id=None,
                 decision_id=str(sc.id) if sc else "",
-                created_at=tx.created_at.isoformat() if tx.created_at else "",
+                created_at=tx.created_at or datetime.now(UTC),
             )
         )

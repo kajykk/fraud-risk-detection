@@ -6,9 +6,11 @@ import random
 import string
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_tenant_id, require_scope
 from app.core.exceptions import ConflictError, NotFoundError
@@ -21,12 +23,37 @@ from app.schemas.case import (
     CaseEventOut,
     CaseLevel,
     CaseOut,
+    CaseType,
     CaseUpdate,
     CommentCreate,
 )
 from app.schemas.common import ApiResponse, CaseStatus, PageResponse
 
 router = APIRouter()
+
+# 案件状态机（基准 §3.2）：CLOSED 为终态；重开仅允许 FALSE_ALARM → IN_REVIEW 复查
+_CASE_TRANSITIONS: dict[str, set[str]] = {
+    CaseStatus.OPEN.value: {CaseStatus.IN_REVIEW.value, CaseStatus.FALSE_ALARM.value},
+    CaseStatus.IN_REVIEW.value: {
+        CaseStatus.CONFIRMED.value,
+        CaseStatus.CLOSED.value,
+        CaseStatus.FALSE_ALARM.value,
+        CaseStatus.OPEN.value,
+    },
+    CaseStatus.CONFIRMED.value: {CaseStatus.CLOSED.value},
+    CaseStatus.FALSE_ALARM.value: {CaseStatus.CLOSED.value, CaseStatus.IN_REVIEW.value},
+    CaseStatus.CLOSED.value: set(),
+}
+
+
+def _validate_transition(current: str, target: str) -> None:
+    """校验状态转移合法性；非法转移抛 ConflictError。"""
+    allowed = _CASE_TRANSITIONS.get(current, set())
+    if target not in allowed:
+        raise ConflictError(
+            f"invalid status transition: {current} -> {target} "
+            f"(allowed: {sorted(allowed) or 'none'})"
+        )
 
 
 def _to_uuid(value: str) -> uuid.UUID:
@@ -55,9 +82,9 @@ def _case_to_out(case: Case) -> CaseOut:
     return CaseOut(
         id=str(case.id),
         case_no=case.case_no,
-        type=case.type,
-        level=case.level,
-        status=case.status,
+        type=CaseType(case.type),
+        level=CaseLevel(case.level),
+        status=CaseStatus(case.status),
         transaction_id=str(case.transaction_id) if case.transaction_id else None,
         score_id=str(case.score_id) if case.score_id else None,
         assigned_to=str(case.assigned_to) if case.assigned_to else None,
@@ -84,7 +111,7 @@ def _event_to_out(event: CaseEvent) -> CaseEventOut:
     )
 
 
-async def _load_case(session, case_id: str, tenant_id: str) -> Case:
+async def _load_case(session: Any, case_id: str, tenant_id: str) -> Case:
     """按主键加载案件，找不到抛 NotFoundError。"""
     result = await session.execute(
         select(Case).where(Case.id == _parse_uuid(case_id), Case.tenant_id == uuid.UUID(tenant_id))
@@ -92,7 +119,7 @@ async def _load_case(session, case_id: str, tenant_id: str) -> Case:
     case = result.scalar_one_or_none()
     if case is None:
         raise NotFoundError(f"case not found: {case_id}")
-    return case
+    return cast(Case, case)
 
 
 @router.get("", response_model=ApiResponse[PageResponse[CaseOut]])
@@ -100,34 +127,44 @@ async def list_cases(
     status: CaseStatus | None = None,
     level: CaseLevel | None = None,
     case_type: str | None = Query(default=None, alias="type"),
-    page: int = 1,
-    page_size: int = 20,
+    assignee_id: str | None = None,
+    unassigned: bool = False,
+    exclude_closed: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:read")),
+    _user: dict[str, Any] = Depends(require_scope("case:read")),
 ) -> ApiResponse[PageResponse[CaseOut]]:
-    """分页查询案件（支持 status / level / type 过滤，按 created_at 倒序）。"""
+    """分页查询案件。
+
+    支持 status / level / type / assignee_id / unassigned / exclude_closed 过滤。
+    （供前端"我的待办/未分配/已关闭"视图映射真实查询条件。）
+    """
     async with session_scope(tenant_id) as session:
-        base = select(Case).where(Case.tenant_id == uuid.UUID(tenant_id))
+        # 单一过滤构造器，保证列表与计数条件永远一致
+        filters = [Case.tenant_id == uuid.UUID(tenant_id)]
         if status is not None:
-            base = base.where(Case.status == status.value)
+            filters.append(Case.status == status.value)
         if level is not None:
-            base = base.where(Case.level == level.value)
+            filters.append(Case.level == level.value)
         if case_type:
-            base = base.where(Case.type == case_type)
+            filters.append(Case.type == case_type)
+        if assignee_id:
+            filters.append(Case.assigned_to == _to_uuid(assignee_id))
+        if unassigned:
+            filters.append(Case.assigned_to.is_(None))
+        if exclude_closed:
+            filters.append(Case.status != CaseStatus.CLOSED.value)
 
-        count_q = (
-            select(func.count()).select_from(Case).where(Case.tenant_id == uuid.UUID(tenant_id))
-        )
-        if status is not None:
-            count_q = count_q.where(Case.status == status.value)
-        if level is not None:
-            count_q = count_q.where(Case.level == level.value)
-        if case_type:
-            count_q = count_q.where(Case.type == case_type)
-
-        total = (await session.execute(count_q)).scalar() or 0
+        total = (
+            await session.execute(
+                select(func.count()).select_from(Case).where(*filters)
+            )
+        ).scalar() or 0
         result = await session.execute(
-            base.order_by(Case.created_at.desc())
+            select(Case)
+            .where(*filters)
+            .order_by(Case.created_at.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -141,62 +178,75 @@ async def list_cases(
 async def create_case(
     req: CaseCreate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:write")),
+    _user: dict[str, Any] = Depends(require_scope("case:write")),
 ) -> ApiResponse[CaseOut]:
-    """手动创建案件（关联交易，写首条 CREATED 事件）。"""
+    """手动创建案件（关联交易，写首条 CREATED 事件）。
+
+    case_no 为日期+随机数，并发创建可能撞唯一约束（0008 迁移）：
+    捕获 IntegrityError 重新生成编号重试。
+    """
     now = datetime.now(UTC)
-    async with session_scope(tenant_id) as session:
-        tx_result = await session.execute(
-            select(Transaction).where(
-                Transaction.tenant_id == uuid.UUID(tenant_id),
-                Transaction.external_tx_id == req.external_tx_id,
-            )
-        )
-        tx = tx_result.scalar_one_or_none()
-        if tx is None:
-            raise NotFoundError(f"transaction not found: {req.external_tx_id}")
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with session_scope(tenant_id) as session:
+                tx_result = await session.execute(
+                    select(Transaction).where(
+                        Transaction.tenant_id == uuid.UUID(tenant_id),
+                        Transaction.external_tx_id == req.external_tx_id,
+                    )
+                )
+                tx = tx_result.scalar_one_or_none()
+                if tx is None:
+                    raise NotFoundError(f"transaction not found: {req.external_tx_id}")
 
-        score_result = await session.execute(
-            select(Score)
-            .where(Score.transaction_id == tx.id)
-            .order_by(Score.created_at.desc())
-            .limit(1)
-        )
-        score = score_result.scalar_one_or_none()
+                score_result = await session.execute(
+                    select(Score)
+                    .where(Score.transaction_id == tx.id)
+                    .order_by(Score.created_at.desc())
+                    .limit(1)
+                )
+                score = score_result.scalar_one_or_none()
 
-        case = Case(
-            tenant_id=uuid.UUID(tenant_id),
-            transaction_id=tx.id,
-            score_id=score.id if score else None,
-            case_no=_gen_case_no(now),
-            type="FRAUD",
-            level=req.priority.value,
-            status=CaseStatus.OPEN.value,
-            assigned_to=_to_uuid(req.assignee_id) if req.assignee_id else None,
-            amount=tx.amount,
-            description=req.description,
-        )
-        session.add(case)
-        await session.flush()
+                case_no = _gen_case_no(now)
+                if attempt:
+                    case_no = f"{case_no}-{uuid.uuid4().hex[:4].upper()}"
+                case = Case(
+                    tenant_id=uuid.UUID(tenant_id),
+                    transaction_id=tx.id,
+                    score_id=score.id if score else None,
+                    case_no=case_no,
+                    type="FRAUD",
+                    level=req.priority.value,
+                    status=CaseStatus.OPEN.value,
+                    assigned_to=_to_uuid(req.assignee_id) if req.assignee_id else None,
+                    amount=tx.amount,
+                    description=req.description,
+                )
+                session.add(case)
+                await session.flush()
 
-        event = CaseEvent(
-            tenant_id=uuid.UUID(tenant_id),
-            case_id=case.id,
-            action="CREATED",
-            from_status=None,
-            to_status=CaseStatus.OPEN.value,
-            operator_id=_to_uuid(_user["sub"]),
-            comment=req.description,
-        )
-        session.add(event)
-        return ApiResponse(data=_case_to_out(case))
+                event = CaseEvent(
+                    tenant_id=uuid.UUID(tenant_id),
+                    case_id=case.id,
+                    action="CREATED",
+                    from_status=None,
+                    to_status=CaseStatus.OPEN.value,
+                    operator_id=_to_uuid(_user["sub"]),
+                    comment=req.description,
+                )
+                session.add(event)
+                return ApiResponse(data=_case_to_out(case))
+        except IntegrityError as exc:
+            last_exc = exc
+    raise ConflictError(f"case_no generation conflict after retries: {last_exc}") from last_exc
 
 
 @router.get("/{case_id}", response_model=ApiResponse[CaseOut])
 async def get_case(
     case_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:read")),
+    _user: dict[str, Any] = Depends(require_scope("case:read")),
 ) -> ApiResponse[CaseOut]:
     """查询案件详情。"""
     async with session_scope(tenant_id) as session:
@@ -209,7 +259,7 @@ async def update_case(
     case_id: str,
     req: CaseUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:write")),
+    _user: dict[str, Any] = Depends(require_scope("case:write")),
 ) -> ApiResponse[CaseOut]:
     """更新案件状态/处理人/备注（写对应事件）。"""
     async with session_scope(tenant_id) as session:
@@ -217,14 +267,21 @@ async def update_case(
 
         if req.status is not None:
             from_status = case.status
-            case.status = req.status.value
+            to_status = req.status.value
+            _validate_transition(from_status, to_status)
+            case.status = to_status
+            # 统一维护终态时间戳（与 close_case 端点保持一致）
+            if to_status == CaseStatus.CONFIRMED.value and case.confirmed_at is None:
+                case.confirmed_at = datetime.now(UTC)
+            if to_status == CaseStatus.CLOSED.value:
+                case.closed_at = datetime.now(UTC)
             session.add(
                 CaseEvent(
                     tenant_id=uuid.UUID(tenant_id),
                     case_id=case.id,
                     action="STATUS_CHANGED",
                     from_status=from_status,
-                    to_status=req.status.value,
+                    to_status=to_status,
                     operator_id=_to_uuid(_user["sub"]),
                     comment=req.comment,
                 )
@@ -248,7 +305,7 @@ async def add_comment(
     case_id: str,
     req: CommentCreate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:write")),
+    _user: dict[str, Any] = Depends(require_scope("case:write")),
 ) -> ApiResponse[CaseEventOut]:
     """添加案件备注。"""
     async with session_scope(tenant_id) as session:
@@ -270,7 +327,7 @@ async def close_case(
     case_id: str,
     req: CaseCloseRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:write")),
+    _user: dict[str, Any] = Depends(require_scope("case:write")),
 ) -> ApiResponse[CaseOut]:
     """关闭案件（状态机校验：非 CLOSED）。"""
     async with session_scope(tenant_id) as session:
@@ -298,7 +355,7 @@ async def close_case(
 async def case_timeline(
     case_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("case:read")),
+    _user: dict[str, Any] = Depends(require_scope("case:read")),
 ) -> ApiResponse[list[CaseEventOut]]:
     """案件操作时间线（created_at 升序）。"""
     async with session_scope(tenant_id) as session:

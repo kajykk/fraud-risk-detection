@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 RETRY_COUNTDOWNS = [60, 300, 1800, 7200, 43200]
 
 
-class WebhookTask(Task):
+class WebhookTask(Task): # type: ignore[misc]
     """Webhook 任务基类：worker 进程启动时配置 structlog。"""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -45,7 +45,7 @@ class WebhookTask(Task):
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="webhook.deliver",
     bind=True,
     base=WebhookTask,

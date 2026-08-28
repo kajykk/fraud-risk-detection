@@ -7,17 +7,21 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.common import RuleStatus
+from app.schemas.common import RuleAction, RuleStatus
 
 
 class RuleCreate(BaseModel):
-    """POST /rules 请求体（D05 §5.2）。"""
+    """POST /rules 请求体（D05 §5.2）。
+
+    action 使用 RuleAction 枚举：自由字符串会静默绕过引擎匹配
+    （引擎只识别 BLOCK/REVIEW），导致规则创建成功却永不生效。
+    """
 
     name: str
     description: str | None = None
     dsl: str
     severity: str = "WARN"
-    action: str = "REVIEW"
+    action: RuleAction = RuleAction.REVIEW
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     scope: dict[str, Any] = Field(default_factory=dict)
@@ -30,7 +34,7 @@ class RuleUpdate(BaseModel):
     description: str | None = None
     dsl: str | None = None
     severity: str | None = None
-    action: str | None = None
+    action: RuleAction | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     scope: dict[str, Any] | None = None
@@ -63,7 +67,7 @@ class RuleVersionCreate(BaseModel):
     dsl: str
     change_summary: str | None = None
     severity: str | None = None
-    action: str | None = None
+    action: RuleAction | None = None
 
 
 class RuleVersionOut(BaseModel):

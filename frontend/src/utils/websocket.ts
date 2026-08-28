@@ -11,6 +11,7 @@
  * - gang.detected
  */
 import { ref, onScopeDispose } from 'vue'
+import { createWsTicket } from '@/api/auth'
 
 export type WsEventType =
   | 'transaction.shap_ready'
@@ -43,12 +44,24 @@ export function useWebSocket(tokenRef: () => string | null) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   const handlers = new Map<WsEventType, Set<Handler>>()
 
-  function buildUrl(): string | null {
-    const token = tokenRef()
-    if (!token) return null
+  /** 鉴权参数：优先一次性 ticket（不进访问日志），失败回退 JWT */
+  async function buildAuthParam(): Promise<string | null> {
+    try {
+      const { ticket } = await createWsTicket()
+      return `ticket=${encodeURIComponent(ticket)}`
+    } catch {
+      const token = tokenRef()
+      if (!token) return null
+      return `access_token=${encodeURIComponent(token)}`
+    }
+  }
+
+  async function buildUrl(): Promise<string | null> {
+    const authParam = await buildAuthParam()
+    if (!authParam) return null
     const base = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8002/api/v1/ws'
     const sep = base.includes('?') ? '&' : '?'
-    return `${base}${sep}access_token=${encodeURIComponent(token)}`
+    return `${base}${sep}${authParam}`
   }
 
   function on(event: WsEventType, handler: Handler) {
@@ -87,10 +100,10 @@ export function useWebSocket(tokenRef: () => string | null) {
     }
   }
 
-  function connect() {
-    const url = buildUrl()
-    if (!url) return
+  async function connect() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+    const url = await buildUrl()
+    if (!url) return
 
     try {
       ws = new WebSocket(url)

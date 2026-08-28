@@ -1,4 +1,4 @@
-"""用户模型（D04 V1.1 §3.1 补充）。
+﻿"""用户模型（D04 V1.1 §3.1 补充）。
 
 表：users
 - 平台/商户后台登录用户（/auth/login）
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin, TimestampMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

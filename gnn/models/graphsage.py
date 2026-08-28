@@ -36,11 +36,12 @@ class GraphSAGE:
         self.dropout = dropout
         self._model: Any = None  # 实际的 torch_geometric.nn.Module
         self._device: Any = None
+        self._loaded = False  # 训练权重是否已加载
 
     def build(self) -> Any:
         """构建 PyG SAGEConv 模型。"""
-        import torch  # type: ignore
-        from torch_geometric.nn import SAGEConv  # type: ignore
+        import torch
+        from torch_geometric.nn import SAGEConv
 
         class _SAGEModule(torch.nn.Module):
             def __init__(
@@ -60,7 +61,7 @@ class GraphSAGE:
                 self.dropout = torch.nn.Dropout(dropout)
                 self.relu = torch.nn.ReLU()
 
-            def forward(self, x, edge_index):
+            def forward(self, x: Any, edge_index: Any) -> Any:
                 for conv in self.convs:
                     x = self.relu(conv(x, edge_index))
                     x = self.dropout(x)
@@ -75,6 +76,9 @@ class GraphSAGE:
         )
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._model.to(self._device)
+        # 服务包装类默认推理用途：构建后立即置 eval，避免 dropout 引入不确定性
+        self._model.eval()
+        self._loaded = False
         logger.info(
             "graphsage.built",
             in_channels=self.in_channels,
@@ -84,22 +88,31 @@ class GraphSAGE:
         )
         return self._model
 
+    @property
+    def is_loaded(self) -> bool:
+        """是否已加载训练好的权重（未加载时 embedding 输出无业务意义）。"""
+        return bool(self._loaded and self._model is not None)
+
     def load(self, path: str) -> Any:
         """加载训练好的权重。"""
-        import torch  # type: ignore
+        import torch
 
         if self._model is None:
             self.build()
         state = torch.load(path, map_location=self._device, weights_only=True)
         self._model.load_state_dict(state)  # type: ignore[union-attr]
         self._model.eval()  # type: ignore[union-attr]
+        self._loaded = True
         logger.info("graphsage.loaded", path=path)
         return self._model
 
     def forward(self, x: Any, edge_index: Any) -> Any:
-        """前向推理：返回节点 embedding。"""
-        if self._model is None:
-            raise RuntimeError("graphsage_not_built")
+        """前向推理：返回节点 embedding。
+
+        仅允许在已加载训练权重后调用（随机权重输出会污染下游团伙检测）。
+        """
+        if self._model is None or not self._loaded:
+            raise RuntimeError("graphsage_weights_not_loaded")
         with __import__("torch").no_grad():
             return self._model(x.to(self._device), edge_index.to(self._device))
 

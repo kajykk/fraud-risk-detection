@@ -1,4 +1,4 @@
-"""规则引擎模型（D04 V1.1 §3.4）。
+﻿"""规则引擎模型（D04 V1.1 §3.4）。
 
 表：rules / rule_versions
 
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

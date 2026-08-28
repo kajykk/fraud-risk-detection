@@ -41,17 +41,31 @@ class Graph:
 
 
 # Cypher：k 跳关联节点 + 边查询（D04 §2.2 节点 + 关系类型）
-# 注意：不能直接 collect(DISTINCT rs)（rs 是每条路径的关系列表，会按列表去重，
+# 注意 1：不能直接 collect(DISTINCT rs)（rs 是每条路径的关系列表，会按列表去重，
 # 导致边集合为空）；先 UNWIND 节点与关系，再分别按对象去重。
-K_HOP_QUERY = """
-MATCH path = (n)-[*1..$k_hops]-(m)
+# 注意 2：Neo4j 变长路径边界（*1..K）不接受参数占位符，跳数只能以整数
+# 白名单校验后插值（k_hop_query 内强制 1..5 校验，杜绝注入）。
+# 注意 3：WITH path LIMIT 先截断路径数再 UNWIND，防止超级节点笛卡尔积爆炸。
+_K_HOPS_MIN = 1
+_K_HOPS_MAX = 5
+_PATH_BUDGET = 500
+
+
+def k_hop_query(k_hops: int) -> str:
+    """构建 k 跳关联查询；k_hops 必须为 1..5 的整数（防注入白名单）。"""
+    if not isinstance(k_hops, int) or isinstance(k_hops, bool) or not (
+        _K_HOPS_MIN <= k_hops <= _K_HOPS_MAX
+    ):
+        raise ValueError(f"k_hops must be an integer in [{_K_HOPS_MIN}, {_K_HOPS_MAX}], got {k_hops!r}")
+    return f"""
+MATCH path = (n)-[*1..{k_hops}]-(m)
 WHERE n.id = $node_id AND n.tenant_id = $tenant_id
+WITH path LIMIT {_PATH_BUDGET}
 UNWIND nodes(path) AS node
 UNWIND relationships(path) AS rel
-WITH collect(DISTINCT {id: node.id, labels: labels(node), props: properties(node)}) AS nodes,
+WITH collect(DISTINCT {{id: node.id, labels: labels(node), props: properties(node)}}) AS nodes,
      collect(DISTINCT rel) AS rels
 RETURN nodes, rels
-LIMIT 1000
 """
 
 
@@ -130,23 +144,27 @@ class GNNGraphService:
     def _query_k_hop_sync(
         self, node_id: str, k_hops: int, tenant_id: str
     ) -> dict[str, Any]:
-        """同步 Neo4j Cypher 查询（在 thread executor 中执行）。"""
+        """同步 Neo4j Cypher 查询（在 thread executor 中执行）。
+
+        查询超时受 settings.query_timeout_seconds 约束（D03 §7.2 P99 < 2s）：
+        超级节点/深跳数下 Cypher 可能长时间占用连接，超时后由 driver 终止。
+        """
         if self._driver is None:
             raise RuntimeError("neo4j driver not attached")
-        with self._driver.session(database=settings.neo4j.database) as sess:
-            result = sess.run(
-                K_HOP_QUERY,
-                node_id=node_id,
-                k_hops=k_hops,
-                tenant_id=tenant_id,
-            )
-            record = result.single()
-            if record is None:
-                return {"nodes": [], "rels": []}
-            return {
-                "nodes": list(record["nodes"] or []),
-                "rels": self._format_rels(record["rels"] or []),
-            }
+        records = self._driver.execute_query(
+            k_hop_query(k_hops),
+            node_id=node_id,
+            tenant_id=tenant_id,
+            database_=settings.neo4j.database,
+            timeout=settings.query_timeout_seconds,
+        )
+        if not records:
+            return {"nodes": [], "rels": []}
+        record = records[0]
+        return {
+            "nodes": list(record["nodes"] or []),
+            "rels": self._format_rels(record["rels"] or []),
+        }
 
     @staticmethod
     def _format_rels(rels: Any) -> list[dict[str, Any]]:
@@ -156,8 +174,8 @@ class GNNGraphService:
             try:
                 formatted.append(
                     {
-                        "src": r.start_node["id"],  # type: ignore[index]
-                        "dst": r.end_node["id"],  # type: ignore[index]
+                        "src": r.start_node["id"],
+                        "dst": r.end_node["id"],
                         "type": r.type(),
                         "props": dict(r),
                     }
@@ -177,7 +195,7 @@ class GNNGraphService:
         if cached is not None:
             return cached
 
-        if self._graphsage is None or self._graphsage._model is None:
+        if self._graphsage is None or not self._graphsage.is_loaded:
             logger.warning("graph_service.graphsage_not_loaded")
             return []
 
@@ -199,7 +217,7 @@ class GNNGraphService:
 
     def _infer_embedding_sync(self, graph: Graph, node_id: str) -> list[float]:
         """同步 GraphSAGE 推理（在 thread executor 中执行）。"""
-        import torch  # type: ignore
+        import torch
 
         nodes = graph.nodes
         if not nodes:
@@ -234,7 +252,8 @@ class GNNGraphService:
         edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
 
         embeddings = self._graphsage.forward(x, edge_index)  # type: ignore[union-attr]
-        return embeddings[target_idx].cpu().tolist()
+        target_emb = embeddings[target_idx].cpu().tolist()
+        return [float(v) for v in target_emb]
 
     async def detect_community(
         self,
@@ -255,11 +274,15 @@ class GNNGraphService:
             for e in sub_graph.edges
             if e.get("src") and e.get("dst")
         ]
-        communities = self._community.detect(
-            nodes=nodes,
-            edges=edges,
-            node_amounts=node_amounts,
-            node_fraud_labels=node_fraud_labels,
+        # Louvain 为 CPU 密集同步计算，放入线程池避免阻塞事件循环
+        communities = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: self._community.detect(
+                nodes=nodes,
+                edges=edges,
+                node_amounts=node_amounts,
+                node_fraud_labels=node_fraud_labels,
+            ),
         )
         for community in communities:
             if node_id in community.members:
@@ -295,4 +318,4 @@ class GNNGraphService:
             logger.warning("graph_service.cache.write_failed", error=str(exc))
 
 
-__all__ = ["K_HOP_QUERY", "GNNGraphService", "Graph"]
+__all__ = ["GNNGraphService", "Graph", "k_hop_query"]

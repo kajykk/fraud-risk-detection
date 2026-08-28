@@ -1,4 +1,4 @@
-"""structlog 配置（D03 V1.1 §1.3 可观测性）。
+﻿"""structlog 配置（D03 V1.1 §1.3 可观测性）。
 
 提供结构化 JSON 日志，集成 request_id 与 tenant_id 上下文。
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import cast
 
 import structlog
 
@@ -44,7 +45,7 @@ def configure_logging() -> None:
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """获取一个 structlog logger。"""
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
 
 
 def bind_request_context(request_id: str, tenant_id: str | None = None) -> None:

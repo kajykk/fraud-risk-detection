@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -90,14 +91,54 @@ class RemoteCircuitBreaker:
             self.opened_at = time.monotonic()
 
 
+# 共享 HTTP 客户端池（key=事件循环 id）：
+# - uvicorn 单循环下所有评分请求复用同一连接池，避免每笔交易 TCP+TLS 握手；
+# - Celery 每任务 asyncio.run 独立循环：按 loop id 隔离，互不串扰；
+# - 测试可继续通过 monkeypatch 替换 _build_http_client 注入 MockTransport。
+_shared_clients: dict[int, httpx.AsyncClient] = {}
+_SHARED_CLIENTS_MAX = 16
+
+
+async def close_shared_http_clients() -> None:
+    """关闭当前进程内所有共享客户端（应用关闭时调用）。"""
+    while _shared_clients:
+        _, client = _shared_clients.popitem()
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 def _build_http_client() -> httpx.AsyncClient:
-    """构建 ml-serving HTTP 客户端（连接/读超时来自配置）。"""
-    return httpx.AsyncClient(
-        timeout=httpx.Timeout(
-            settings.ml_read_timeout_seconds,
-            connect=settings.ml_connect_timeout_seconds,
-        ),
-    )
+    """构建/复用 ml-serving HTTP 客户端（连接/读超时来自配置）。
+
+    返回的客户端由调用方负责区分生命周期：
+    - 命中共享池：不要 close（连接池供后续请求复用）；
+    - 未命中（无运行中循环或测试注入）：行为同普通工厂函数。
+    """
+    try:
+        loop_key = id(asyncio.get_running_loop())
+    except RuntimeError:
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                settings.ml_read_timeout_seconds,
+                connect=settings.ml_connect_timeout_seconds,
+            ),
+        )
+
+    # 容量保护：清理已关闭/失效条目，超限则放弃复用直接新建
+    if len(_shared_clients) > _SHARED_CLIENTS_MAX:
+        for key in [k for k, c in _shared_clients.items() if c.is_closed]:
+            _shared_clients.pop(key, None)
+
+    client = _shared_clients.get(loop_key)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                settings.ml_read_timeout_seconds,
+                connect=settings.ml_connect_timeout_seconds,
+            ),
+        )
+        _shared_clients[loop_key] = client
+    return client
 
 
 class MLScoringEngine:
@@ -171,12 +212,13 @@ class MLScoringEngine:
         if settings.ml_api_key:
             headers["X-Api-Key"] = settings.ml_api_key
 
-        async with _build_http_client() as client:
-            response = await client.post(
-                f"{settings.ml_service_url}/v1/score",
-                json=payload,
-                headers=headers,
-            )
+        # 共享客户端（连接池复用）：命中池时不 close，由应用关闭统一释放
+        client = _build_http_client()
+        response = await client.post(
+            f"{settings.ml_service_url}/v1/score",
+            json=payload,
+            headers=headers,
+        )
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
@@ -184,7 +226,7 @@ class MLScoringEngine:
         return self._map_remote_response(data)
 
     @staticmethod
-    def _normalize_series(behavior: list[float] | None) -> list[list[float]]:
+    def _normalize_series(behavior: list[Any] | None) -> list[list[float]]:
         """backend 扁平序列 [f1, f2..] → 服务端 list[list[float]]；二维则透传。"""
         series = behavior or []
         if not series:
@@ -353,7 +395,7 @@ class MLScoringEngine:
             redis = get_redis()
             key = f"ml:{tenant_id}:{modality}:recent_scores"
             # 取最近 100 次滑动窗口均值
-            scores = await redis.lrange(key, 0, 99)
+            scores = await redis.lrange(key, 0, 99)  # type: ignore[misc]
             if scores:
                 nums = [float(s) for s in scores]
                 return sum(nums) / len(nums)
@@ -382,9 +424,9 @@ class MLScoringEngine:
 
         fused = 0.0
         for modality in ("structured", "text", "behavior"):
-            ms: ModalityScore | None = getattr(scores, modality)
-            if ms is not None:
-                fused += ms.score * (weight_map[modality] / total_weight)
+            modality_score: ModalityScore | None = getattr(scores, modality)
+            if modality_score is not None:
+                fused += modality_score.score * (weight_map[modality] / total_weight)
         return min(1.0, max(0.0, fused))
 
 
@@ -397,5 +439,6 @@ __all__ = [
     "ModalityScore",
     "ModalityScores",
     "RemoteCircuitBreaker",
+    "close_shared_http_clients",
     "ml_engine",
 ]

@@ -90,12 +90,12 @@ export function grantConsent(payload: {
   })
 }
 
-/** 撤回同意（D05 §13.2） */
+/** 撤回同意（D05 §13.2；withdrawal_reason 为自由文本，后端原文留痕） */
 export function withdrawConsent(payload: {
   user_id: string
   verification_token: string
   consent_id: string
-  withdrawal_reason?: 'NO_LONGER_NEEDED' | 'SERVICE_CANCELLED' | 'PRIVACY_CONCERN' | 'OTHER'
+  withdrawal_reason?: string
   effective_immediately?: boolean
 }) {
   return post<ConsentRecord>('/pipl/consent/withdraw', payload)

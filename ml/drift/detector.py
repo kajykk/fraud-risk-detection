@@ -44,6 +44,9 @@ def compute_psi(
 ) -> float:
     """计算 PSI（Population Stability Index）。
 
+    numpy 向量化实现（searchsorted 分桶），替代逐样本×逐桶双重循环；
+    10 万样本 ×10 bin 场景从百万级 Python 比较降为 O(n log bins)。
+
     Args:
         current_dist: 当前样本值列表
         reference_dist: 基线样本值列表
@@ -55,23 +58,23 @@ def compute_psi(
     """
     if not current_dist or not reference_dist:
         return 0.0
-    # 用 reference_dist 分位数作为切分点
+    import numpy as np
+
+    # 用 reference_dist 分位数作为切分点（与原实现的采样公式一致）
     sorted_ref = sorted(reference_dist)
     quantiles = [
         sorted_ref[int(len(sorted_ref) * (i + 1) / n_bins) - 1]
         for i in range(n_bins - 1)
     ]
-    bins = [-math.inf] + quantiles + [math.inf]
+    edges = np.array([-math.inf] + quantiles + [math.inf], dtype=np.float64)
 
     def histogram(values: list[float]) -> list[float]:
-        counts = [0.0] * n_bins
-        for v in values:
-            for i in range(n_bins):
-                if bins[i] <= v < bins[i + 1]:
-                    counts[i] += 1.0
-                    break
-        total = sum(counts) or 1.0
-        return [c / total for c in counts]
+        v = np.asarray(values, dtype=np.float64)
+        idx = np.searchsorted(edges, v, side="right") - 1
+        np.clip(idx, 0, n_bins - 1, out=idx)
+        counts = np.bincount(idx, minlength=n_bins).astype(np.float64)
+        total = float(counts.sum()) or 1.0
+        return [float(x / total) for x in counts]
 
     p_ref = histogram(reference_dist)
     p_cur = histogram(current_dist)

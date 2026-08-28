@@ -2,13 +2,17 @@
  * 案件管理类型
  * 对齐 D05 §8（案件管理接口）与 D06 §6（案件管理）
  */
-import type { CaseStatus, CaseLevel } from './enum'
+import type { CaseStatus, CaseLevel, CaseConclusion } from './enum'
 
 /** 案件列表查询参数（D05 §8.1） */
 export interface CaseQuery {
   status?: CaseStatus
   priority?: CaseLevel
   assignee_id?: string
+  /** 仅查未分配案件 */
+  unassigned?: boolean
+  /** 排除已关闭（"我的待办"视图用） */
+  exclude_closed?: boolean
   created_after?: string
   created_before?: string
 }
@@ -37,7 +41,7 @@ export interface CaseDetail extends CaseListItem {
   loss_amount_cents?: number
   recovery_amount_cents?: number
   reportable_to_aml?: boolean
-  conclusion?: 'CONFIRMED_FRAUD' | 'FALSE_ALARM' | 'INCONCLUSIVE'
+  conclusion?: CaseConclusion
   closed_at?: string
   closed_by?: string
   close_comment?: string
@@ -62,7 +66,7 @@ export interface UpdateCaseRequest {
 
 /** 关闭案件请求（D05 §8.6） */
 export interface CloseCaseRequest {
-  conclusion: 'CONFIRMED_FRAUD' | 'FALSE_ALARM' | 'INCONCLUSIVE'
+  conclusion: CaseConclusion
   loss_amount?: number
   recovery_amount?: number
   reportable_to_aml?: boolean

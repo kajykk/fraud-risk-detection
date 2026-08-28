@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -45,7 +46,7 @@ _graphsage: GraphSAGE | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI 生命周期：连接 Neo4j + Redis + 加载 GraphSAGE。"""
     global _service, _graphsage
     _graphsage = GraphSAGE(
@@ -58,15 +59,20 @@ async def lifespan(app: FastAPI):
         _graphsage.build()
         if os.path.exists(settings.model_path):
             _graphsage.load(settings.model_path)
+        else:
+            logger.warning("gnn.main.graphsage.weights_missing", path=settings.model_path)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("gnn.main.graphsage.load_failed", error=str(exc))
+        logger.error("gnn.main.graphsage.load_failed", error=str(exc))
+        # 加载失败不阻断启动，但 embedding 能力必须降级（拒绝随机权重输出）
 
     redis_client = None
     try:
         if os.getenv("REDIS_URL"):
-            import redis.asyncio as aioredis  # type: ignore
+            import redis.asyncio as aioredis
 
-            redis_client = aioredis.from_url(settings.redis.url, decode_responses=True)
+            redis_client = aioredis.from_url(  # type: ignore[no-untyped-call]
+                settings.redis.url, decode_responses=True
+            )
             await redis_client.ping()
     except Exception as exc:  # noqa: BLE001
         logger.warning("gnn.main.redis.unavailable", error=str(exc))
@@ -74,7 +80,7 @@ async def lifespan(app: FastAPI):
 
     neo4j_driver = None
     try:
-        from neo4j import GraphDatabase  # type: ignore
+        from neo4j import GraphDatabase
 
         neo4j_driver = GraphDatabase.driver(
             settings.neo4j.uri,
@@ -88,7 +94,8 @@ async def lifespan(app: FastAPI):
     _service = GNNGraphService(
         neo4j_driver=neo4j_driver,
         redis_client=redis_client,
-        graphsage=_graphsage if _graphsage._model is not None else None,
+        # 仅在权重真正加载后注入模型；否则 embedding 端点降级返回空/503
+        graphsage=_graphsage if _graphsage.is_loaded else None,
     )
     logger.info("gnn.main.started", port=settings.server.port)
     yield
@@ -129,7 +136,7 @@ def create_app() -> FastAPI:
 
     if settings.server.enable_prometheus:
         try:
-            from prometheus_fastapi_instrumentator import Instrumentator  # type: ignore
+            from prometheus_fastapi_instrumentator import Instrumentator
 
             Instrumentator().instrument(app).expose(app, include_in_schema=False)
         except Exception as exc:  # noqa: BLE001
@@ -141,7 +148,7 @@ def create_app() -> FastAPI:
             "status": "ok",
             "service": "gnn",
             "version": "1.1.0",
-            "graphsage_loaded": _graphsage is not None and _graphsage._model is not None,
+            "graphsage_loaded": _graphsage is not None and _graphsage.is_loaded,
             "service_ready": _service is not None,
         }
 
@@ -206,7 +213,7 @@ app = create_app()
 
 def main() -> None:
     """uvicorn 入口（端口 8502）。"""
-    import uvicorn  # type: ignore
+    import uvicorn
 
     uvicorn.run(
         "gnn.main:app",

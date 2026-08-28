@@ -32,7 +32,7 @@ from app.workers.celery_app import celery_app
 logger = get_task_logger(__name__)
 
 
-class ShapTask(Task):
+class ShapTask(Task): # type: ignore[misc]
     """SHAP 任务基类：启动时配置 structlog。"""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -40,7 +40,7 @@ class ShapTask(Task):
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="shap.compute",
     bind=True,
     base=ShapTask,
@@ -140,7 +140,7 @@ def compute_shap(
         raise self.retry(exc=exc, countdown=10 * (self.request.retries + 1)) from exc
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="shap.cache_cleanup",
     bind=True,
     base=ShapTask,

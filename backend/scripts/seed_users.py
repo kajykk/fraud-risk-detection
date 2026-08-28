@@ -121,7 +121,9 @@ async def main() -> None:
                 status="ACTIVE",
             )
             session.add(api_key)
-            print(f"created api key: {admin_api_key}")
+            # 不打印完整明文（易被 CI 日志/终端历史采集）：
+            # 自动生成的 Key 如需获取，请重设 FRD_ADMIN_API_KEY 后重新执行
+            print(f"created api key: {admin_api_key[:12]}...{admin_api_key[-4:]} (masked)")
         else:
             print("api key exists")
 

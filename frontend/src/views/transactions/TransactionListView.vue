@@ -37,7 +37,11 @@ const query = reactive({
   page_size: 20
 })
 
+// 请求序号守卫：快速翻页/改页大小时，旧响应不得覆盖新响应
+let fetchSeq = 0
+
 async function fetchData() {
+  const seq = ++fetchSeq
   loading.value = true
   const svc = ElLoading.service({ lock: true, text: '加载中...' })
   try {
@@ -47,11 +51,16 @@ async function fetchData() {
       risk_band: query.risk_band || undefined
     }
     const res = await listTransactions(params)
+    if (seq !== fetchSeq) return // 已有更新的请求，丢弃过期响应
     list.value = res.items
     total.value = res.total
+  } catch {
+    // 错误提示由 axios 拦截器统一处理；此处避免 unhandled rejection
   } finally {
-    loading.value = false
-    svc.close()
+    if (seq === fetchSeq) {
+      loading.value = false
+      svc.close()
+    }
   }
 }
 
@@ -64,6 +73,13 @@ function handleReset() {
   query.external_tx_id = ''
   query.decision = ''
   query.risk_band = ''
+  query.page = 1
+  fetchData()
+}
+
+// Element Plus 改 page_size 时可能连发 current-change + size-change，
+// 统一由 size-change 重置到第 1 页并只发一次请求
+function handleSizeChange() {
   query.page = 1
   fetchData()
 }
@@ -104,7 +120,7 @@ onMounted(fetchData)
         <ElTableColumn prop="external_tx_id" label="交易号" min-width="180" />
         <ElTableColumn prop="tx_type" label="类型" width="90" />
         <ElTableColumn label="金额" width="120">
-          <template #default="{ row }">{{ formatAmount(row.metadata?.amount as number) }}</template>
+          <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
         </ElTableColumn>
         <ElTableColumn label="决策" width="110">
           <template #default="{ row }">
@@ -137,7 +153,7 @@ onMounted(fetchData)
         layout="total, sizes, prev, pager, next, jumper"
         :page-sizes="[10, 20, 50, 100]"
         @current-change="fetchData"
-        @size-change="fetchData"
+        @size-change="handleSizeChange"
         style="margin-top: 16px; justify-content: flex-end"
       />
     </ElCard>

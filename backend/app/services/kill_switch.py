@@ -1,4 +1,4 @@
-"""KillSwitch：4 级作用域分级（D03 V1.1 §4.8 / ADR-013）。
+﻿"""KillSwitch：4 级作用域分级（D03 V1.1 §4.8 / ADR-013）。
 
 | 级别 | 作用域 | 触发条件 | 兜底策略 |
 |---|---|---|---|
@@ -8,13 +8,16 @@
 | L4 规则级 | 单条规则 | 误报率>50%/版本异常 | 无 |
 
 状态机：IDLE → ARMED → ACTIVE → COOLDOWN → IDLE
-- L1/L2：合规官 + 邝振华双签触发（含短信二次确认）
+- L1/L2：合规官 + 双签触发（含短信二次确认）
 - L3/L4：系统自动触发，可手动 override
-- 状态实时同步 Redis pubsub，5s 内全节点一致
+- 状态一致性：读路径每次直查 Redis（无本地缓存），写入经 pubsub 广播；
+  listen_kill_switch 提供跨副本事件留痕（可观测性），非一致性依赖
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import uuid
 from enum import StrEnum
@@ -72,7 +75,7 @@ class KillSwitch:
             if value is None:
                 return False
             state = json.loads(value)
-            return state.get("state") == KillSwitchState.ACTIVE.value
+            return bool(state.get("state") == KillSwitchState.ACTIVE.value)
         except Exception as exc:
             logger.warning("kill_switch_check_failed", scope=scope.value, target=target, error=str(exc))
             # Redis 故障时降级读取环境变量初始值
@@ -168,8 +171,59 @@ class KillSwitch:
             return False
 
 
+async def listen_kill_switch() -> None:
+    """订阅 kill switch 频道（跨副本事件留痕，可观测性）。
+
+    读路径每次直查 Redis、无本地缓存，状态天然即时一致；
+    本监听用于多副本部署下的激活/解除事件日志与未来告警联动扩展。
+    断线 5s 重连；取消（应用关闭）时静默退出。
+    """
+    while True:
+        pubsub = None
+        try:
+            from app.db.redis import get_redis
+
+            pubsub = get_redis().pubsub()
+            await pubsub.subscribe(settings.kill_switch_pubsub_channel)
+            logger.info(
+                "kill_switch_subscribed", channel=settings.kill_switch_pubsub_channel
+            )
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(message.get("data") or "{}")
+                except ValueError:
+                    continue
+                logger.info(
+                    "kill_switch_event",
+                    action=payload.get("event"),
+                    scope=payload.get("scope"),
+                    target=payload.get("target"),
+                    reason=payload.get("reason"),
+                    operator_id=payload.get("operator_id"),
+                )
+        except asyncio.CancelledError:
+            if pubsub is not None:
+                with contextlib.suppress(Exception):
+                    await pubsub.aclose()  # type: ignore[no-untyped-call]
+            raise
+        except Exception as exc:
+            logger.warning("kill_switch_listener_retry", error=str(exc))
+            if pubsub is not None:
+                with contextlib.suppress(Exception):
+                    await pubsub.aclose()  # type: ignore[no-untyped-call]
+            await asyncio.sleep(5)
+
+
 # 单例
 kill_switch = KillSwitch()
 
 
-__all__ = ["KillSwitch", "KillSwitchScope", "KillSwitchState", "kill_switch"]
+__all__ = [
+    "KillSwitch",
+    "KillSwitchScope",
+    "KillSwitchState",
+    "kill_switch",
+    "listen_kill_switch",
+]

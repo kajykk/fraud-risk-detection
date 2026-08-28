@@ -1,4 +1,4 @@
-"""反洗钱模型（D04 V1.1 §3.6）。
+﻿"""反洗钱模型（D04 V1.1 §3.6）。
 
 表：aml_reports / sanction_screenings
 """
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
@@ -36,6 +36,11 @@ class AmlReport(Base, PKMixin, TenantMixin):
         UUID(as_uuid=True), nullable=True
     )
     case_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # 数据主体（PIPL 法律保留判定键，0006 迁移回填）：
+    # 与 transactions.user_account_id 同构；创建报告时必须填充
+    subject_user_account_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=False
+    )
     amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
     content_xml: Mapped[str] = mapped_column(Text, nullable=False)
     # status: PENDING / SUBMITTED / ACCEPTED / REJECTED

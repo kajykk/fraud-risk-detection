@@ -1,4 +1,4 @@
-"""审计日志模型（D04 V1.1 §3.7）。
+﻿"""审计日志模型（D04 V1.1 §3.7）。
 
 表：audit_logs（含 sequence_no，独立连接池串行写入）
 
@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

@@ -66,9 +66,25 @@ def compute_file_sha256(path: str | Path) -> str:
 
 
 def compute_data_hash(samples: list[Any]) -> str:
-    """计算训练数据 SHA256（用于 model_versions.training_data_hash）。"""
-    payload = json.dumps(samples, default=str, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    """计算训练数据 SHA256（用于 model_versions.training_data_hash）。
+
+    分块序列化更新哈希：10 万条 dict 一次性 json.dumps 会形成内存尖峰
+    （完整 JSON 字符串 + 排序中间态），分块可将峰值从 O(N) 降到 O(1)。
+    """
+    import io as _io
+
+    h = hashlib.sha256()
+    buf = _io.StringIO()
+    for item in samples:
+        json.dump(item, buf, default=str, ensure_ascii=False, sort_keys=True)
+        if buf.tell() > 1 << 20:  # 每 ~1MB 落一次哈希
+            h.update(buf.getvalue().encode("utf-8"))
+            buf.seek(0)
+            buf.truncate(0)
+    tail = buf.getvalue()
+    if tail:
+        h.update(tail.encode("utf-8"))
+    return h.hexdigest()
 
 
 class ModelRegistry:

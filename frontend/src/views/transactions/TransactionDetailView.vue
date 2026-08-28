@@ -2,7 +2,7 @@
 /**
  * 交易详情（D06 §5.4 标签页：基本信息 / 模型解释 / 规则命中 / 图关系 / 历史行为 / 案件关联 / 反馈）
  */
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElCard,
@@ -18,7 +18,13 @@ import {
   ElMessage,
   ElSkeleton
 } from 'element-plus'
-import { getTransaction, triggerShap, getShapResult, feedbackLabel } from '@/api/transaction'
+import {
+  getTransaction,
+  triggerShap,
+  getShapStatus,
+  getShapResult,
+  feedbackLabel
+} from '@/api/transaction'
 import type { TransactionDetail, ShapResult } from '@/types/transaction'
 import { FeedbackLabel } from '@/types/enum'
 import {
@@ -29,9 +35,12 @@ import {
   formatRiskScore,
   formatDate
 } from '@/utils/format'
+import { useWebSocket, type WsMessage } from '@/utils/websocket'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 const txId = String(route.params.externalTxId)
 
 const detail = ref<TransactionDetail | null>(null)
@@ -48,17 +57,73 @@ async function fetchDetail() {
   }
 }
 
+let shapPollTimer: ReturnType<typeof setTimeout> | null = null
+let wsWaitingDecisionId: string | null = null
+
+// WebSocket 实时事件：SHAP 计算完成推送（D05 §2.8）。
+// useWebSocket 在组件作用域内创建，onScopeDispose 自动断开；
+// 事件到达即拉取结果；轮询作为 WS 不可用时的降级兜底同时启动，
+// 先到先得（幂等：重复拉取 SHAP 结果无副作用）。
+const ws = useWebSocket(() => authStore.token)
+
+function stopShapPolling() {
+  if (shapPollTimer) {
+    clearTimeout(shapPollTimer)
+    shapPollTimer = null
+  }
+}
+
+function onShapReady(msg: WsMessage) {
+  const payload = msg.data as { decision_id?: string } | undefined
+  const decisionId = payload?.decision_id
+  if (wsWaitingDecisionId && decisionId && decisionId !== wsWaitingDecisionId) {
+    return // 非当前交易的就绪事件
+  }
+  stopShapPolling()
+  void getShapResult(wsWaitingDecisionId ?? '')
+    .then((result) => {
+      shap.value = result
+      shapLoading.value = false
+      ElMessage.success('模型解释已生成')
+    })
+    .catch(() => {
+      ElMessage.warning('解释结果获取失败，请重试')
+    })
+}
+
 async function fetchShap() {
   if (!detail.value) return
   shapLoading.value = true
+  const decisionId = detail.value.decision_id
+  wsWaitingDecisionId = decisionId
   try {
-    await triggerShap(detail.value.decision_id)
-    shap.value = await getShapResult(detail.value.decision_id)
+    await triggerShap(decisionId)
+    // 双通道并行：WS 推送（实时）+ 状态轮询兜底（WS 断连/未订阅时生效）
+    ws.on('transaction.shap_ready', onShapReady)
+    ws.connect()
+    pollShapUntilReady(decisionId, 0)
   } catch {
-    // SHAP 可能尚未就绪
-  } finally {
+    ElMessage.warning('SHAP 解释暂不可用，请稍后重试')
     shapLoading.value = false
   }
+}
+
+// SHAP 为异步任务：提交后立即取结果必失败，轮询状态直至 READY（上限 ~30s）
+async function pollShapUntilReady(decisionId: string, attempt: number) {
+  if (attempt >= 10) {
+    ElMessage.warning('SHAP 计算超时，请稍后在案件页查看')
+    return
+  }
+  try {
+    const status = await getShapStatus(decisionId)
+    if (status.status === 'READY' || status.status === 'COMPLETED') {
+      shap.value = await getShapResult(decisionId)
+      return
+    }
+  } catch {
+    // 状态查询失败按未就绪处理，继续下一轮
+  }
+  shapPollTimer = setTimeout(() => pollShapUntilReady(decisionId, attempt + 1), 3000)
 }
 
 async function markFraud(label: FeedbackLabel) {
@@ -77,6 +142,13 @@ function goCase() {
 }
 
 onMounted(fetchDetail)
+
+onUnmounted(() => {
+  stopShapPolling()
+  ws.off('transaction.shap_ready', onShapReady)
+  ws.disconnect()
+  wsWaitingDecisionId = null
+})
 </script>
 
 <template>

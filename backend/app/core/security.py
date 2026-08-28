@@ -1,4 +1,4 @@
-"""安全模块：JWT 生成/验证 + 密码哈希。
+﻿"""安全模块：JWT 生成/验证 + 密码哈希。
 
 依据：
 - D03 V1.1 §1.3 技术栈：python-jose[cryptography] + passlib[bcrypt]
@@ -26,12 +26,12 @@ REFRESH_TOKEN_TYPE = "refresh"
 
 def hash_password(raw_password: str) -> str:
     """对明文密码做 bcrypt 哈希。"""
-    return pwd_context.hash(raw_password)
+    return str(pwd_context.hash(raw_password))
 
 
 def verify_password(raw_password: str, hashed: str) -> bool:
     """校验明文密码与 bcrypt 哈希是否匹配。"""
-    return pwd_context.verify(raw_password, hashed)
+    return bool(pwd_context.verify(raw_password, hashed))
 
 
 def create_access_token(
@@ -56,7 +56,7 @@ def create_access_token(
     }
     if extra_claims:
         payload.update(extra_claims)
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return str(jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm))
 
 
 def create_refresh_token(
@@ -83,12 +83,12 @@ def create_refresh_token(
         payload["roles"] = roles
     if scopes:
         payload["scope"] = " ".join(scopes)
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return str(jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm))
 
 
 def decode_token(token: str) -> dict[str, Any]:
     """解码并验证 JWT。验证失败抛 JWTError。"""
-    payload = jwt.decode(
+    payload: dict[str, Any] = jwt.decode(
         token,
         settings.jwt_secret_key,
         algorithms=[settings.jwt_algorithm],

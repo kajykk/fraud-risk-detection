@@ -6,7 +6,7 @@
  * 右侧：时间线、备注、附件
  * 操作：状态流转、添加备注、结案
  */
-import { computed, onMounted, ref, reactive } from 'vue'
+import { computed, onMounted, onUnmounted, ref, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElCard,
@@ -31,7 +31,7 @@ import {
 } from 'element-plus'
 import { getCase, getCaseTimeline, listCaseComments, addCaseComment, updateCase, closeCase } from '@/api/case'
 import type { CaseDetail, CaseTimelineEvent, CaseComment } from '@/types/case'
-import { CaseStatus } from '@/types/enum'
+import { CaseStatus, CaseConclusion } from '@/types/enum'
 import {
   CASE_STATUS_LABELS,
   CASE_LEVEL_LABELS,
@@ -60,24 +60,41 @@ const statusForm = reactive<{ status: CaseStatus; comment: string }>({
 
 const closeDialogVisible = ref(false)
 const closeForm = reactive<{
-  conclusion: 'CONFIRMED_FRAUD' | 'FALSE_ALARM' | 'INCONCLUSIVE'
+  conclusion: CaseConclusion
   loss_amount: number | undefined
   recovery_amount: number | undefined
   reportable_to_aml: boolean
   comment: string
 }>({
-  conclusion: 'CONFIRMED_FRAUD',
+  conclusion: CaseConclusion.CONFIRMED_FRAUD,
   loss_amount: undefined,
   recovery_amount: undefined,
   reportable_to_aml: false,
   comment: ''
 })
 
+// SLA 倒计时需要响应式"当前时间"驱动：Date.now() 非响应式，
+// 纯 computed 只会求值一次，倒计时永远静止
+const now = ref(Date.now())
+let slaTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  slaTimer = setInterval(() => {
+    now.value = Date.now()
+  }, 30_000)
+})
+
+onUnmounted(() => {
+  if (slaTimer) {
+    clearInterval(slaTimer)
+    slaTimer = null
+  }
+})
+
 const slaCountdown = computed(() => {
   if (!detail.value?.sla_deadline) return null
   const deadline = new Date(detail.value.sla_deadline).getTime()
-  const now = Date.now()
-  const diff = deadline - now
+  const diff = deadline - now.value
   if (diff <= 0) return { overdue: true, text: '已逾期' }
   const hours = Math.floor(diff / 3_600_000)
   const minutes = Math.floor((diff % 3_600_000) / 60_000)
@@ -141,7 +158,7 @@ async function submitStatus() {
 }
 
 function openCloseDialog() {
-  closeForm.conclusion = 'CONFIRMED_FRAUD'
+  closeForm.conclusion = CaseConclusion.CONFIRMED_FRAUD
   closeForm.loss_amount = undefined
   closeForm.recovery_amount = undefined
   closeForm.reportable_to_aml = false
@@ -321,9 +338,9 @@ onMounted(fetchAll)
       <ElForm :model="closeForm" label-width="120px">
         <ElFormItem label="结案结论">
           <ElSelect v-model="closeForm.conclusion" style="width: 100%">
-            <ElOption label="确认欺诈" value="CONFIRMED_FRAUD" />
-            <ElOption label="误报" value="FALSE_ALARM" />
-            <ElOption label="证据不足" value="INCONCLUSIVE" />
+            <ElOption label="确认欺诈" :value="CaseConclusion.CONFIRMED_FRAUD" />
+            <ElOption label="误报" :value="CaseConclusion.FALSE_ALARM" />
+            <ElOption label="证据不足" :value="CaseConclusion.INCONCLUSIVE" />
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="损失金额（分）">

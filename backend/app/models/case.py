@@ -1,4 +1,4 @@
-"""案件与申诉模型（D04 V1.1 §3.3）。
+﻿"""案件与申诉模型（D04 V1.1 §3.3）。
 
 表：cases / case_events / appeals
 """
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

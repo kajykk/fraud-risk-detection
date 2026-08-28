@@ -88,26 +88,42 @@ class TrainingPipeline:
             structured_features = [
                 self.feature_store.engineer(raw) for raw in dataset.structured
             ]
+            feature_names = self.feature_store.schema.feature_names
             s_result = train_structured(
-                structured_features, dataset.labels, self.config.structured_path
+                structured_features,
+                dataset.labels,
+                self.config.structured_path,
+                feature_names=feature_names,
             )
             t_result = train_text(dataset.texts, dataset.labels, self.config.text_path)
             b_result = train_behavior(
                 dataset.behavior_series, dataset.labels, self.config.behavior_path
             )
 
-            # 融合层训练（用三模态在训练集上的预测分数作为 Stacking 输入）
-            # 此处简化：直接复用各模态评估指标作为占位
-            s_metrics, t_metrics, b_metrics = s_result.metrics, t_result.metrics, b_result.metrics
-            f_result = train_fusion(
-                structured_scores=[s_metrics.get("auc", 0.5)] * len(dataset.labels),
-                text_scores=[t_metrics.get("auc", 0.5)] * len(dataset.labels),
-                behavior_scores=[b_metrics.get("auc", 0.5)] * len(dataset.labels),
-                labels=dataset.labels,
-                save_path=self.config.fusion_path,
-            )
+            # 融合层 Stacking：三个模态在共享 holdout 上的预测概率作为元学习器输入。
+            # 三个训练器用同一 random_state 分层切分 → val_indices 完全一致；
+            # 历史实现把标量 AUC 广播成常量数组训练，特征无方差，融合模型无效。
+            f_result = None
+            if (
+                s_result.val_indices
+                and s_result.val_indices == t_result.val_indices == b_result.val_indices
+            ):
+                f_result = train_fusion(
+                    structured_scores=s_result.val_probas,
+                    text_scores=t_result.val_probas,
+                    behavior_scores=b_result.val_probas,
+                    labels=s_result.val_labels,
+                    save_path=self.config.fusion_path,
+                )
+            else:
+                logger.error(
+                    "pipeline.fusion.skipped_holdout_misaligned",
+                    structured=len(s_result.val_indices),
+                    text=len(t_result.val_indices),
+                    behavior=len(b_result.val_indices),
+                )
 
-            # 注册到 model_versions 表
+            # 注册到 model_versions 表（fusion 可能为 None：holdout 未对齐时跳过）
             registrations = [
                 self._build_registration(
                     "STRUCTURED", s_result.model_path, s_result.metrics, data_hash
@@ -118,10 +134,13 @@ class TrainingPipeline:
                 self._build_registration(
                     "BEHAVIOR", b_result.model_path, b_result.metrics, data_hash
                 ),
-                self._build_registration(
-                    "FUSION", f_result.model_path, f_result.metrics, data_hash
-                ),
             ]
+            if f_result is not None:
+                registrations.append(
+                    self._build_registration(
+                        "FUSION", f_result.model_path, f_result.metrics, data_hash
+                    )
+                )
             model_ids: list[str] = []
             for reg in registrations:
                 model_id = await self.registry.register(reg)
@@ -137,7 +156,8 @@ class TrainingPipeline:
                     "structured": s_result.metrics,
                     "text": t_result.metrics,
                     "behavior": b_result.metrics,
-                    "fusion": f_result.metrics,
+                    # f_result 为 None 表示 holdout 未对齐被跳过（已 error 留痕）
+                    "fusion": f_result.metrics if f_result is not None else None,
                 },
             }
         finally:
@@ -151,16 +171,27 @@ class TrainingPipeline:
         metrics: dict[str, float],
         data_hash: str,
     ) -> ModelRegistration:
+        import os
+
+        # 版本号唯一化：prefix + 训练时间戳（历史实现恒为 "{prefix}.0"，
+        # 每周重训都写同一版本，注册表无法区分/回滚）
+        from datetime import UTC, datetime
+
+        run_ts = datetime.now(UTC).strftime("%Y%m%d%H%M")
+        artifact_sha = compute_file_sha256(model_path) if os.path.exists(model_path) else ""
+        if not artifact_sha:
+            # 工件缺失 → 注册不可追溯，直接失败（不允许 sha256="" 入库）
+            raise FileNotFoundError(f"model artifact missing: {model_path}")
         return ModelRegistration(
             tenant_id=self.config.tenant_id,
             model_type=model_type,
-            version=f"{self.config.model_version_prefix}.0",
+            version=f"{self.config.model_version_prefix}.{run_ts}",
             status="REGISTERED",
             metrics=metrics,
             training_data_hash=data_hash,
             feature_names=self.feature_store.schema.feature_names,
             artifacts_path=model_path,
-            sha256=compute_file_sha256(model_path) if __import__("os").path.exists(model_path) else "",
+            sha256=artifact_sha,
             canary_percent=0,
             observation_hours=168,
         )

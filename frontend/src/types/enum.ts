@@ -239,3 +239,18 @@ export enum GnnAlgorithm {
   LABEL_PROP = 'LABEL_PROP',
   WALKTRAP = 'WALKTRAP'
 }
+
+// 结案结论（D05 §8.6，基准 §3.2）
+export enum CaseConclusion {
+  CONFIRMED_FRAUD = 'CONFIRMED_FRAUD',
+  FALSE_ALARM = 'FALSE_ALARM',
+  INCONCLUSIVE = 'INCONCLUSIVE'
+}
+
+// Kill Switch 作用域级别（ADR-013 四级）
+export enum KillSwitchLevel {
+  L1_GLOBAL = 'L1_GLOBAL',
+  L2_MODEL = 'L2_MODEL',
+  L3_MODALITY = 'L3_MODALITY',
+  L4_RULE = 'L4_RULE'
+}

@@ -36,7 +36,7 @@ def generate_shap_factors(
     tx_type = str(transaction.get("tx_type", "PURCHASE"))
 
     # 各特征贡献（正=推高风险，负=拉低风险）
-    factors = []
+    factors: list[dict[str, Any]] = []
 
     # 1. 金额特征（越大贡献越高）
     if amount > 1_000_000:

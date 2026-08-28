@@ -1,11 +1,16 @@
 """数据加载（PostgreSQL + 特征工程）。
 
 数据源（D04）：
-- transactions: 交易表（含 risk_features JSONB 预计算特征）
-- scores: 评分记录表（含 label 反馈）
+- transactions: 交易表（含 risk_features JSONB 预计算特征与人工反馈标签）
+- scores: 评分记录表（每笔交易取最新一条，弱标签回退）
 - 行为时序：从 transactions.metadata 提取点击流/输入节奏
 
-多租户：所有查询 SET LOCAL app.tenant_id（ADR-015）。
+标签语义（防自证循环）：
+- 人工反馈标签（risk_features.is_fraud，来自 /transactions/feedback）
+  优先于系统 DENY 决策；DENY 仅作冷启动弱标签回退。
+- 每笔交易仅产出一条样本（LATERAL 取最新评分）。
+
+多租户：所有查询显式 tenant_id 过滤（训练侧离线只读）。
 """
 
 from __future__ import annotations
@@ -77,6 +82,13 @@ class DataLoader:
                 tenant_id=tenant_id, period_start=period_start, period_end=period_end,
             )
 
+        # 标签语义（H-2 修复）：
+        # 1) 人工反馈标签优先 —— transactions.risk_features.is_fraud 由
+        #    POST /transactions/feedback 写入，代表事后确认的真实欺诈标签，
+        #    打破"模型学习复刻旧模型 DENY 决策"的自证循环；
+        # 2) 无反馈时回退 decision = 'DENY'（弱标签，仅用于冷启动）。
+        # 样本去重：LATERAL 每笔交易只取最新一条评分，防止一对多 JOIN
+        # 产生重复样本随机泄漏进训练/验证两侧。
         sql = """
             SELECT
                 t.id,
@@ -87,9 +99,24 @@ class DataLoader:
                 t.risk_features,
                 COALESCE(t.note_text, '') AS note_text,
                 t.metadata->'behavior' AS behavior,
-                COALESCE(s.decision = 'DENY', false) AS is_fraud
+                COALESCE(
+                    CASE
+                        WHEN t.risk_features->>'is_fraud' = 'true' THEN true
+                        WHEN t.risk_features->>'is_fraud' = 'false' THEN false
+                        ELSE NULL
+                    END,
+                    s.decision = 'DENY',
+                    false
+                ) AS is_fraud,
+                (t.risk_features->>'is_fraud') IS NOT NULL AS has_feedback_label
             FROM transactions t
-            LEFT JOIN scores s ON s.transaction_id = t.id AND s.tenant_id = t.tenant_id
+            LEFT JOIN LATERAL (
+                SELECT sc.decision
+                FROM scores sc
+                WHERE sc.transaction_id = t.id AND sc.tenant_id = t.tenant_id
+                ORDER BY sc.created_at DESC
+                LIMIT 1
+            ) s ON true
             WHERE t.tenant_id = $1
               AND t.occurred_at BETWEEN $2 AND $3
             ORDER BY t.occurred_at DESC
@@ -100,6 +127,7 @@ class DataLoader:
         texts: list[str] = []
         behavior_series: list[list[list[float]]] = []
         labels: list[int] = []
+        n_feedback = 0
         for row in rows:
             features = dict(row["risk_features"] or {})
             features.setdefault("amount", float(row["amount"]))
@@ -110,12 +138,16 @@ class DataLoader:
             texts.append(row["note_text"] or "")
             behavior_series.append(self._parse_behavior(row["behavior"]))
             labels.append(1 if row["is_fraud"] else 0)
+            if row["has_feedback_label"]:
+                n_feedback += 1
 
         logger.info(
             "data_loader.loaded",
             tenant_id=tenant_id,
             n_samples=len(labels),
             n_positive=sum(labels),
+            n_feedback_labels=n_feedback,
+            label_semantics="feedback_first_fallback_deny",
         )
         return TrainingDataset(
             structured=structured,

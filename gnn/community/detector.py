@@ -73,7 +73,7 @@ class CommunityDetector:
         Returns:
             communities: List[Community]
         """
-        import networkx as nx  # type: ignore
+        import networkx as nx
 
         graph = nx.Graph()
         graph.add_nodes_from(nodes)
@@ -112,7 +112,7 @@ class CommunityDetector:
     def _louvain(self, graph: Any) -> dict[str, int]:
         """Louvain 社区发现（python-louvain / networkx）。"""
         try:
-            import networkx as nx  # type: ignore
+            import networkx as nx
 
             # 优先使用 networkx 3.x 内置 louvain_communities
             if hasattr(nx, "louvain_communities"):
@@ -128,7 +128,7 @@ class CommunityDetector:
             logger.warning("community.louvain.networkx_failed", error=str(exc))
 
         try:
-            import community as community_louvain  # type: ignore
+            import community as community_louvain
 
             best_partition = community_louvain.best_partition(  # type: ignore[attr-defined]
                 graph, resolution=self.resolution, random_state=42
@@ -140,7 +140,7 @@ class CommunityDetector:
 
     def _label_propagation(self, graph: Any) -> dict[str, int]:
         """Label Propagation 社区发现（networkx 内置）。"""
-        import networkx as nx  # type: ignore
+        import networkx as nx
 
         communities = nx.algorithms.community.label_propagation_communities(graph)
         partition: dict[str, int] = {}

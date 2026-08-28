@@ -1,4 +1,4 @@
-"""ML 模型路由（D05 §6）。
+﻿"""ML 模型路由（D05 §6）。
 
 CRUD + canary / promote / rollback / retire / drift。
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, update
@@ -78,7 +79,7 @@ def _model_to_out(model: ModelVersion) -> ModelOut:
     )
 
 
-async def _load_model(session, model_id: str, tenant_id: str) -> ModelVersion:
+async def _load_model(session: Any, model_id: str, tenant_id: str) -> ModelVersion:
     """按主键加载模型，找不到抛 NotFoundError。"""
     result = await session.execute(
         select(ModelVersion).where(
@@ -89,7 +90,7 @@ async def _load_model(session, model_id: str, tenant_id: str) -> ModelVersion:
     model = result.scalar_one_or_none()
     if model is None:
         raise NotFoundError(f"model not found: {model_id}")
-    return model
+    return cast(ModelVersion, model)
 
 
 @router.get("", response_model=ApiResponse[PageResponse[ModelOut]])
@@ -99,7 +100,7 @@ async def list_models(
     page: int = 1,
     page_size: int = 20,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:read")),
+    _user: dict[str, Any] = Depends(require_scope("model:read")),
 ) -> ApiResponse[PageResponse[ModelOut]]:
     """查询模型版本列表（支持 model_type / status 过滤）。"""
     async with session_scope(tenant_id) as session:
@@ -137,7 +138,7 @@ async def list_models(
 async def register_model(
     req: ModelRegisterRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """注册新模型（同租户同 model_type 同 version 唯一）。"""
     async with session_scope(tenant_id) as session:
@@ -185,7 +186,7 @@ async def register_model(
 async def get_model(
     model_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:read")),
+    _user: dict[str, Any] = Depends(require_scope("model:read")),
 ) -> ApiResponse[ModelOut]:
     """查询模型详情。"""
     async with session_scope(tenant_id) as session:
@@ -198,7 +199,7 @@ async def update_model(
     model_id: str,
     req: ModelUpdateRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """更新模型元数据（仅 REGISTERED 可更新，写入 metrics）。"""
     async with session_scope(tenant_id) as session:
@@ -222,7 +223,7 @@ async def retire_model_delete(
     reason: str,
     approver_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """退役模型（DELETE 语义，仅 REGISTERED 可退役）。"""
     async with session_scope(tenant_id) as session:
@@ -239,7 +240,7 @@ async def canary_model(
     model_id: str,
     req: ModelCanaryRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """启动金丝雀发布（REGISTERED → CANARY）。"""
     async with session_scope(tenant_id) as session:
@@ -258,7 +259,7 @@ async def promote_model(
     model_id: str,
     req: ModelPromoteRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """金丝雀晋升为生产（CANARY → ACTIVE，同租户其他 ACTIVE 转 RETIRED）。"""
     async with session_scope(tenant_id) as session:
@@ -287,7 +288,7 @@ async def rollback_model(
     model_id: str,
     req: ModelRollbackRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """紧急回滚：当前转 RETIRED，目标模型（非 ACTIVE）转 ACTIVE。"""
     async with session_scope(tenant_id) as session:
@@ -309,7 +310,7 @@ async def retire_model(
     model_id: str,
     req: ModelRetireRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:write")),
+    _user: dict[str, Any] = Depends(require_scope("model:write")),
 ) -> ApiResponse[ModelOut]:
     """显式退役（非 ACTIVE 可退，ACTIVE 需先切流量）。"""
     async with session_scope(tenant_id) as session:
@@ -325,7 +326,7 @@ async def retire_model(
 async def model_drift(
     model_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("model:read")),
+    _user: dict[str, Any] = Depends(require_scope("model:read")),
 ) -> ApiResponse[DriftOut]:
     """查询模型漂移指标（drift_alerts 最近记录，无记录则 HEALTHY）。"""
     async with session_scope(tenant_id) as session:

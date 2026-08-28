@@ -47,10 +47,13 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
-  // 未登录 → 跳转登录页（带 redirect）
+  // 未登录 → 尝试静默恢复会话（Cookie RT 换取内存 AT），失败才跳登录页
   if (!authStore.isAuthenticated) {
-    next({ path: '/login', query: { redirect: to.fullPath } })
-    return
+    const restored = await authStore.initSession()
+    if (!restored) {
+      next({ path: '/login', query: { redirect: to.fullPath } })
+      return
+    }
   }
 
   // 已登录但 user 信息缺失 → 拉取 profile

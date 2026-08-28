@@ -16,7 +16,7 @@ from typing import Any
 
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import settings
 from .engine import MLScoringEngine, ModalityScores
@@ -45,15 +45,44 @@ _redis: Any | None = None
 
 
 class ScoreRequest(BaseModel):
-    tenant_id: str = Field(..., description="租户 ID")
-    transaction_id: str = Field(..., description="交易 ID")
+    """评分请求。
+
+    限幅约束：behavior_series / structured_features 无上限时，
+    恶意或异常客户端可在 FastAPI 解析阶段就撑爆内存（DoS 面）。
+    """
+
+    model_config = {"protected_namespaces": ()}
+
+    tenant_id: str = Field(..., min_length=1, max_length=64, description="租户 ID")
+    transaction_id: str = Field(..., min_length=1, max_length=128, description="交易 ID")
     structured_features: dict[str, Any] = Field(
-        default_factory=dict, description="结构化特征（金额/时间/商户/设备/历史）"
+        default_factory=dict,
+        description="结构化特征（金额/时间/商户/设备/历史）",
     )
-    text_content: str = Field(default="", description="文本内容（备注/对话）")
+    text_content: str = Field(
+        default="", max_length=8_000, description="文本内容（备注/对话）"
+    )
     behavior_series: list[list[float]] = Field(
-        default_factory=list, description="行为时序序列"
+        default_factory=list,
+        description="行为时序序列（最多 200 帧，每帧 ≤ 32 维）",
     )
+
+    @field_validator("behavior_series")
+    @classmethod
+    def _limit_series(cls, v: list[list[float]]) -> list[list[float]]:
+        if len(v) > 200:
+            raise ValueError("behavior_series must have at most 200 frames")
+        for frame in v:
+            if len(frame) > 32:
+                raise ValueError("each behavior_series frame must have at most 32 dims")
+        return v
+
+    @field_validator("structured_features")
+    @classmethod
+    def _limit_features(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if len(v) > 128:
+            raise ValueError("structured_features must have at most 128 keys")
+        return v
 
 
 class ScoreResponse(BaseModel):
@@ -137,10 +166,11 @@ def create_app() -> FastAPI:
             tenant_id=req.tenant_id,
         )
         # 缓存特征供后续 SHAP 查询（TTL 24h，ADR-007）
+        # 键含租户前缀：transaction_id 跨租户可能碰撞，无前缀会串读他租户特征
         if _redis is not None:
             try:
                 await _redis.set(
-                    f"shap:features:{req.transaction_id}",
+                    f"shap:features:{req.tenant_id}:{req.transaction_id}",
                     json.dumps(req.structured_features, default=str),
                     ex=settings.redis.shap_cache_ttl_seconds,
                 )
@@ -157,8 +187,15 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/v1/shap/{prediction_id}", response_model=ShapExplanation | None, dependencies=[Depends(require_api_key)])
-    async def shap_explain(prediction_id: str) -> ShapExplanation | None:
-        """查询单笔交易 SHAP 解释（从 Redis 反查特征 + 24h 缓存）。"""
+    async def shap_explain(
+        prediction_id: str,
+        x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
+    ) -> ShapExplanation | None:
+        """查询单笔交易 SHAP 解释（从 Redis 反查特征 + 24h 缓存）。
+
+        X-Tenant-Id 头提供租户上下文时按租户前缀键反查；
+        未提供时回退旧的无前缀键（兼容历史写入）。
+        """
         if _shap is None:
             raise HTTPException(status_code=503, detail="shap_not_loaded")
 
@@ -166,7 +203,11 @@ def create_app() -> FastAPI:
         if _redis is None:
             return None
         try:
-            raw = await _redis.get(f"shap:features:{prediction_id}")
+            raw = None
+            if x_tenant_id:
+                raw = await _redis.get(f"shap:features:{x_tenant_id}:{prediction_id}")
+            if not raw:
+                raw = await _redis.get(f"shap:features:{prediction_id}")
             if not raw:
                 return None
             features: dict[str, Any] = json.loads(raw)

@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
@@ -22,6 +22,10 @@ class TextTrainResult:
     model_path: str
     n_samples: int
     metrics: dict[str, float]
+    # holdout 评估数据（pipeline 用于融合层 Stacking 对齐）
+    val_indices: list[int] = field(default_factory=list)
+    val_labels: list[int] = field(default_factory=list)
+    val_probas: list[float] = field(default_factory=list)
 
 
 def train(
@@ -34,7 +38,7 @@ def train(
     learning_rate: float = 2e-5,
     max_length: int = 128,
 ) -> TextTrainResult:
-    """微调 BERT 二分类模型。"""
+    """微调 BERT 二分类模型（分层 holdout 评估，防止训练集自评虚高）。"""
     import torch  # type: ignore
     from torch.utils.data import DataLoader, Dataset  # type: ignore
     from transformers import (  # type: ignore
@@ -43,6 +47,10 @@ def train(
         get_linear_schedule_with_warmup,
     )
 
+    from .evaluate import stratified_split
+
+    train_idx, val_idx = stratified_split(labels)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -50,9 +58,13 @@ def train(
     ).to(device)
 
     class TextDataset(Dataset):
-        def __init__(self, texts, labels, tokenizer, max_length):
-            self.texts = texts
-            self.labels = labels
+        def __init__(self, texts, labels, tokenizer, max_length, indices=None):
+            if indices is not None:
+                self.texts = [texts[i] for i in indices]
+                self.labels = [labels[i] for i in indices]
+            else:
+                self.texts = texts
+                self.labels = labels
             self.tokenizer = tokenizer
             self.max_length = max_length
 
@@ -73,8 +85,8 @@ def train(
                 "labels": torch.tensor(self.labels[idx], dtype=torch.long),
             }
 
-    dataset = TextDataset(texts, labels, tokenizer, max_length)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    fit_dataset = TextDataset(texts, labels, tokenizer, max_length, train_idx)
+    loader = DataLoader(fit_dataset, batch_size=batch_size, shuffle=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     total_steps = len(loader) * epochs
@@ -98,11 +110,13 @@ def train(
     model.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
 
-    # 评估
+    # 评估：一律在 holdout 上计算（与 structured/behavior 共享同一 split）
     model.eval()
+    eval_indices = val_idx if val_idx else list(range(len(labels)))
+    eval_dataset = TextDataset(texts, labels, tokenizer, max_length, eval_indices)
     probas: list[float] = []
     with torch.no_grad():
-        for batch in DataLoader(dataset, batch_size=batch_size):
+        for batch in DataLoader(eval_dataset, batch_size=batch_size):
             inputs = {
                 "input_ids": batch["input_ids"].to(device),
                 "attention_mask": batch["attention_mask"].to(device),
@@ -110,16 +124,31 @@ def train(
             logits = model(**inputs).logits
             probs = torch.softmax(logits, dim=-1)[:, 1]
             probas.extend(probs.cpu().numpy().tolist())
+    eval_labels = [labels[i] for i in eval_indices]
 
     from .evaluate import compute_auc, compute_f1, compute_recall_at_fpr
 
     metrics = {
-        "auc": compute_auc(labels, probas),
-        "f1": compute_f1(labels, [1 if p >= 0.5 else 0 for p in probas]),
-        "recall_at_1pct_fpr": compute_recall_at_fpr(labels, probas, fpr_threshold=0.01),
+        "auc": compute_auc(eval_labels, probas),
+        "f1": compute_f1(eval_labels, [1 if p >= 0.5 else 0 for p in probas]),
+        "recall_at_1pct_fpr": compute_recall_at_fpr(eval_labels, probas, fpr_threshold=0.01),
+        "metric_source": 1.0 if val_idx else 0.0,
     }
-    logger.info("text.train.done", save_path=save_path, n_samples=len(texts), metrics=metrics)
-    return TextTrainResult(model_path=save_path, n_samples=len(texts), metrics=metrics)
+    logger.info(
+        "text.train.done",
+        save_path=save_path,
+        n_samples=len(texts),
+        metric_source="holdout" if val_idx else "train",
+        metrics={k: v for k, v in metrics.items() if k != "metric_source"},
+    )
+    return TextTrainResult(
+        model_path=save_path,
+        n_samples=len(texts),
+        metrics=metrics,
+        val_indices=val_idx,
+        val_labels=[int(v) for v in eval_labels],
+        val_probas=[float(p) for p in probas],
+    )
 
 
 __all__ = ["train", "TextTrainResult"]

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -54,6 +55,8 @@ class StructuredModality:
         """
         self._redis = redis_client
         try:
+            import re
+
             import xgboost as xgb  # type: ignore
 
             path = settings.models.structured_path
@@ -61,13 +64,41 @@ class StructuredModality:
             booster.load_model(path)
             self._model = booster
             self._feature_names = getattr(booster, "feature_names", None)
+
+            # 特征契约校验：合成列名（f0..fN）意味着训练时未携带真实特征名，
+            # 若直接按名取值会全部 miss → 全零向量（评分失明且无报错）。
+            # 历史模型的特征矩阵由 FeatureStore.engineer 按 schema 顺序构建，
+            # 故此处按位置对齐 schema 特征名；维度不一致则拒绝加载（fail-fast）。
+            if self._feature_names and all(
+                re.fullmatch(r"f\d+", str(n)) for n in self._feature_names
+            ):
+                logger.error(
+                    "structured.model.synthetic_feature_names",
+                    path=path,
+                    hint="retrain with named DataFrame columns",
+                )
+                try:
+                    from ..training_compat import STRUCTURED_FEATURE_NAMES
+
+                    if len(self._feature_names) == len(STRUCTURED_FEATURE_NAMES):
+                        self._feature_names = list(STRUCTURED_FEATURE_NAMES)
+                        logger.warning("structured.model.positional_alignment_applied")
+                    else:
+                        logger.error("structured.model.feature_dim_mismatch")
+                        self._model = None
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("structured.model.alignment_failed", error=str(exc))
+                    self._model = None
             logger.info("structured.model.loaded", path=path)
         except Exception as exc:  # noqa: BLE001
             logger.error("structured.model.load_failed", error=str(exc))
             self._model = None
 
     async def predict(self, features: dict[str, Any], tenant_id: str) -> ModalityScore:
-        """同步推理包装为协程，避免阻塞事件循环。
+        """XGBoost 推理放入线程池执行，避免阻塞事件循环。
+
+        注意：同步 predict 若直接在协程体内执行，一旦卡顿将冻结整个
+        事件循环，外层 asyncio.wait_for 超时也无法触发。
 
         Args:
             features: 结构化特征 dict（金额/时间/商户/设备/历史）
@@ -78,13 +109,10 @@ class StructuredModality:
 
         start = time.perf_counter()
         try:
-            import numpy as np  # type: ignore
-            import xgboost as xgb  # type: ignore
-
             row = self._format_features(features)
-            dmat = xgb.DMatrix(np.asarray([row], dtype=np.float32))
-            probas = self._model.predict(dmat)
-            score = float(probas[0])
+            score = await asyncio.get_running_loop().run_in_executor(
+                None, self._infer_sync, row
+            )
             latency_ms = (time.perf_counter() - start) * 1000.0
             return ModalityScore(
                 score=score,
@@ -95,6 +123,17 @@ class StructuredModality:
         except Exception as exc:  # noqa: BLE001
             logger.warning("structured.predict.failed", error=str(exc))
             return await self.fallback(tenant_id, reason="predict_exception")
+
+    def _infer_sync(self, row: list[float]) -> float:
+        """同步 XGBoost 推理（在线程池中执行）。"""
+        if self._model is None:
+            raise RuntimeError("structured_model_not_loaded")
+        import numpy as np  # type: ignore
+        import xgboost as xgb  # type: ignore
+
+        dmat = xgb.DMatrix(np.asarray([row], dtype=np.float32))
+        probas = self._model.predict(dmat)
+        return float(probas[0])
 
     def _format_features(self, features: dict[str, Any]) -> list[float]:
         """按特征名顺序构造数值向量（缺失补 0）。"""

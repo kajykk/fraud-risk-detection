@@ -100,8 +100,9 @@ async function onSubmit() {
     dsl: form.dsl,
     severity: form.severity,
     action: form.action,
+    // 空串不是 nullish：清空日期后 ?? 不生效，会把 "" 送往后端
     valid_from: form.valid_from || undefined,
-    valid_to: form.valid_to ?? undefined,
+    valid_to: form.valid_to || undefined,
     scope: form.channels.length ? { channels: form.channels } : undefined
   }
   submitting.value = true

@@ -185,10 +185,15 @@ export interface MenuItem {
 }
 
 export const menuItems: MenuItem[] = routes
-  .flatMap((r) => (r.children ? (r.children as RouteRecordRaw[]) : [r]))
-  .filter((r) => !r.meta?.hidden)
+  // 仅取布局路由（DefaultLayout）的一级子路由：
+  // /login、/403、catch-all 等顶层路由不进入侧边栏
+  .filter((r) => r.children)
+  .flatMap((r) => r.children as RouteRecordRaw[])
+  .filter((r) => !r.meta?.hidden && !r.meta?.public)
   .map((r) => ({
-    path: r.path === 'dashboard' ? '/dashboard' : `/${r.path}`,
+    // 子路由 path 为相对路径（如 'dashboard'），统一补前导斜杠；
+    // 绝对路径保持原样，避免生成 '//xxx' 双斜杠
+    path: r.path.startsWith('/') ? r.path : `/${r.path}`,
     name: String(r.name),
     title: String(r.meta?.title ?? r.name),
     icon: r.meta?.icon as string | undefined,

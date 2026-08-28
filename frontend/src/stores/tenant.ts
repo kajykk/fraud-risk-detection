@@ -19,12 +19,14 @@ export const useTenantStore = defineStore('tenant', () => {
     accessibleTenants.value = list
   }
 
-  async function switchTenant(tenantId: string) {
+  async function switchTenant(tenantId: string): Promise<boolean> {
     // TENANT_ADMIN 跨租户切换（admin:* scope，需后端校验）
     const target = accessibleTenants.value.find((t) => t.tenant_id === tenantId)
     if (target) {
       setCurrentTenant(target)
+      return true
     }
+    return false
   }
 
   return {

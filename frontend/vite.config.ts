@@ -6,6 +6,10 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { VitePWA } from 'vite-plugin-pwa'
 import { fileURLToPath, URL } from 'node:url'
 
+// 开发代理目标：本地默认 8002（docker-compose 映射端口）；
+// 容器内通过 VITE_PROXY_TARGET=http://backend:8000 指向服务名
+const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://localhost:8002'
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
@@ -58,12 +62,12 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       '/api': {
-        target: 'http://localhost:8002',
+        target: proxyTarget,
         changeOrigin: true,
         secure: false
       },
       '/ws': {
-        target: 'ws://localhost:8002',
+        target: proxyTarget.replace(/^http/, 'ws'),
         ws: true,
         changeOrigin: true
       }

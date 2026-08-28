@@ -7,7 +7,7 @@
 4. 服务信号 → 优雅关闭 close_engine / close_redis / close_neo4j
 
 中间件顺序（外 → 内）：
-    RequestIdMiddleware → TenantMiddleware → RateLimitMiddleware → AuditMiddleware → 路由
+    CORSMiddleware → RequestIdMiddleware → TenantMiddleware → RateLimitMiddleware → AuditMiddleware → 路由
 """
 
 from __future__ import annotations
@@ -74,20 +74,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     ws_events_task = asyncio.create_task(listen_ws_events())
 
+    # Kill Switch 频道订阅：跨副本激活/解除事件留痕（可观测性，
+    # 读路径直查 Redis 不依赖此监听；断线自动重连，失败不阻断启动）。
+    from app.services.kill_switch import listen_kill_switch
+
+    kill_switch_task = asyncio.create_task(listen_kill_switch())
+
     logger.info("app_startup_complete")
     yield
 
     logger.info("app_shutdown_begin")
-    rules_reload_task.cancel()
-    try:
-        await rules_reload_task
-    except asyncio.CancelledError:
-        pass
-    ws_events_task.cancel()
-    try:
-        await ws_events_task
-    except asyncio.CancelledError:
-        pass
+
+    async def _cancel(task: asyncio.Task[None]) -> None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    await _cancel(rules_reload_task)
+    await _cancel(ws_events_task)
+    await _cancel(kill_switch_task)
+    # 释放共享 HTTP 连接池（ml-serving 远程推理 + gnn 代理）
+    from app.api.v1.gnn import close_shared_gnn_client
+    from app.services.ml_engine import close_shared_http_clients
+
+    await close_shared_http_clients()
+    await close_shared_gnn_client()
     await close_neo4j()
     await close_redis()
     await close_engine()
@@ -107,9 +120,19 @@ def create_app() -> FastAPI:
     )
 
     # ------------------------------------------------------------------ #
-    # 中间件（注册顺序与执行顺序相反：后注册先执行）
+    # 中间件（注册顺序与执行顺序相反：后注册先执行/位于更外层）
     # ------------------------------------------------------------------ #
-    # CORS 最外层
+    # 审计日志（最内层，靠近路由）
+    app.add_middleware(AuditMiddleware)
+    # 限流
+    app.add_middleware(RateLimitMiddleware)
+    # 租户上下文
+    app.add_middleware(TenantMiddleware)
+    # 请求 ID（在 CORS 之内、其余中间件之外，确保后续中间件能读到 request_id）
+    app.add_middleware(RequestIdMiddleware)
+    # CORS 必须最后注册 = 实际最外层：
+    # 否则 Tenant/RateLimit 的 401/403/429 响应不经过 CORS 包装，
+    # 浏览器跨域场景拿不到 Access-Control-Allow-Origin 头
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -118,14 +141,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
     )
-    # 审计日志（最内层，靠近路由）
-    app.add_middleware(AuditMiddleware)
-    # 限流
-    app.add_middleware(RateLimitMiddleware)
-    # 租户上下文
-    app.add_middleware(TenantMiddleware)
-    # 请求 ID（最内层 → 实际最先执行，确保后续中间件能读到 request_id）
-    app.add_middleware(RequestIdMiddleware)
 
     # ------------------------------------------------------------------ #
     # 路由

@@ -1,4 +1,4 @@
-"""规则引擎路由（D05 §5）。
+﻿"""规则引擎路由（D05 §5）。
 
 CRUD + 版本管理 + 灰度推进 + 回滚。
 """
@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_tenant_id, require_scope
 from app.core.exceptions import (
     ApproverRequiredError,
+    ConflictError,
     NoRollbackTargetError,
     NotFoundError,
     RuleNotDeletableError,
@@ -123,7 +126,7 @@ def _version_to_out(rule: Rule, version: RuleVersion) -> RuleVersionOut:
 
 
 async def _load_rule(
-    session, rule_id: str, tenant_id: str, for_write: bool = False
+    session: Any, rule_id: str, tenant_id: str, for_write: bool = False
 ) -> Rule:
     """按业务编号加载规则。
 
@@ -142,10 +145,10 @@ async def _load_rule(
     rule = result.scalar_one_or_none()
     if rule is None:
         raise NotFoundError(f"rule not found: {rule_id}")
-    return rule
+    return cast(Rule, rule)
 
 
-async def _latest_version(session, rule: Rule) -> RuleVersion | None:
+async def _latest_version(session: Any, rule: Rule) -> RuleVersion | None:
     """查询规则最新版本（created_at 倒序取第一条）。"""
     result = await session.execute(
         select(RuleVersion)
@@ -153,15 +156,16 @@ async def _latest_version(session, rule: Rule) -> RuleVersion | None:
         .order_by(RuleVersion.created_at.desc())
         .limit(1)
     )
-    return result.scalar_one_or_none()
+    version = result.scalar_one_or_none()
+    return cast(RuleVersion | None, version)
 
 
 @router.get("", response_model=ApiResponse[PageResponse[RuleOut]])
 async def list_rules(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:read")),
+    _user: dict[str, Any] = Depends(require_scope("rule:read")),
 ) -> ApiResponse[PageResponse[RuleOut]]:
     """分页查询规则列表（tenant_id 为空代表全局规则）。"""
     async with session_scope(tenant_id) as session:
@@ -180,10 +184,33 @@ async def list_rules(
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        items = []
-        for rule in result.scalars().all():
-            version = await _latest_version(session, rule)
-            items.append(_rule_to_out(rule, version))
+        rules = result.scalars().all()
+
+        # 批量加载各规则最新版本（窗口函数取 rn==1，单条 SQL 消除 N+1）
+        latest_versions: dict[Any, RuleVersion] = {}
+        if rules:
+            rule_ids = [r.id for r in rules]
+            rn_subq = (
+                select(
+                    RuleVersion.id.label("vid"),
+                    func.row_number()
+                    .over(
+                        partition_by=RuleVersion.rule_id,
+                        order_by=RuleVersion.created_at.desc(),
+                    )
+                    .label("rn"),
+                )
+                .where(RuleVersion.rule_id.in_(rule_ids))
+                .subquery()
+            )
+            vrows = await session.execute(
+                select(RuleVersion)
+                .join(rn_subq, rn_subq.c.vid == RuleVersion.id)
+                .where(rn_subq.c.rn == 1)
+            )
+            latest_versions = {v.rule_id: v for v in vrows.scalars().all()}
+
+        items = [_rule_to_out(rule, latest_versions.get(rule.id)) for rule in rules]
         return ApiResponse(
             data=PageResponse(items=items, page=page, page_size=page_size, total=total)
         )
@@ -193,50 +220,65 @@ async def list_rules(
 async def create_rule(
     req: RuleCreate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:write")),
+    _user: dict[str, Any] = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleOut]:
-    """新建规则（创建 DRAFT 版本 v1）。"""
+    """新建规则（创建 DRAFT 版本 v1）。
+
+    业务编号基于 COUNT 生成，并发创建会同号触发唯一索引冲突
+    （uq_rules_tenant_rule_id）：捕获 IntegrityError 后追加随机后缀重试。
+    """
     validate_expression(req.dsl)
-    async with session_scope(tenant_id) as session:
-        seq = (
-            await session.execute(
-                select(func.count())
-                .select_from(Rule)
-                .where(Rule.tenant_id == uuid.UUID(tenant_id))
-            )
-        ).scalar() or 0
-        rule = Rule(
-            tenant_id=uuid.UUID(tenant_id),
-            rule_id=f"R{seq + 1:04d}",
-            name=req.name,
-            description=req.description,
-            category=_infer_category(req.dsl),
-            expression=req.dsl,
-            action=req.action,
-            priority=50,
-            enabled=True,
-            current_version="v1",
-        )
-        session.add(rule)
-        await session.flush()
-        version = RuleVersion(
-            tenant_id=uuid.UUID(tenant_id),
-            rule_id=rule.id,
-            version="v1",
-            expression=req.dsl,
-            status=RuleStatus.DRAFT.value,
-            canary_percent=0,
-            created_by=_to_uuid(_user["sub"]),
-        )
-        session.add(version)
-        return ApiResponse(data=_rule_to_out(rule, version))
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with session_scope(tenant_id) as session:
+                seq = (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(Rule)
+                        .where(Rule.tenant_id == uuid.UUID(tenant_id))
+                    )
+                ).scalar() or 0
+                rule_id = f"R{seq + 1:04d}"
+                if attempt:
+                    rule_id = f"{rule_id}-{uuid.uuid4().hex[:4]}"
+                rule = Rule(
+                    tenant_id=uuid.UUID(tenant_id),
+                    rule_id=rule_id,
+                    name=req.name,
+                    description=req.description,
+                    category=_infer_category(req.dsl),
+                    expression=req.dsl,
+                    action=req.action,
+                    priority=50,
+                    enabled=True,
+                    current_version="v1",
+                )
+                session.add(rule)
+                await session.flush()
+                version = RuleVersion(
+                    tenant_id=uuid.UUID(tenant_id),
+                    rule_id=rule.id,
+                    version="v1",
+                    expression=req.dsl,
+                    status=RuleStatus.DRAFT.value,
+                    canary_percent=0,
+                    created_by=_to_uuid(_user["sub"]),
+                )
+                session.add(version)
+                return ApiResponse(data=_rule_to_out(rule, version))
+        except IntegrityError as exc:
+            last_exc = exc
+    raise ConflictError(
+        f"rule id generation conflict after retries: {last_exc}"
+    ) from last_exc
 
 
 @router.get("/{rule_id}", response_model=ApiResponse[RuleOut])
 async def get_rule(
     rule_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:read")),
+    _user: dict[str, Any] = Depends(require_scope("rule:read")),
 ) -> ApiResponse[RuleOut]:
     """查询规则详情（含最新版本信息）。"""
     async with session_scope(tenant_id) as session:
@@ -250,7 +292,7 @@ async def update_rule(
     rule_id: str,
     req: RuleUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:write")),
+    _user: dict[str, Any] = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleOut]:
     """更新规则草稿（仅最新版本为 DRAFT 可更新）。"""
     if req.dsl is not None:
@@ -277,7 +319,7 @@ async def update_rule(
 async def delete_rule(
     rule_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:write")),
+    _user: dict[str, Any] = Depends(require_scope("rule:write")),
 ) -> None:
     """删除规则（仅最新版本为 DRAFT 可删，物理删除 Rule + RuleVersion）。"""
     async with session_scope(tenant_id) as session:
@@ -295,7 +337,7 @@ async def create_version(
     rule_id: str,
     req: RuleVersionCreate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:write")),
+    _user: dict[str, Any] = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleVersionOut]:
     """基于当前规则创建新版本草稿（版本号递增）。"""
     validate_expression(req.dsl)
@@ -323,7 +365,7 @@ async def promote_rule(
     rule_id: str,
     req: RulePromoteRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:write")),
+    _user: dict[str, Any] = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleVersionOut]:
     """版本灰度推进：DRAFT → CANARY → ACTIVE。"""
     if not req.approver_id:
@@ -364,7 +406,7 @@ async def rollback_rule(
     rule_id: str,
     req: RuleRollbackRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:write")),
+    _user: dict[str, Any] = Depends(require_scope("rule:write")),
 ) -> ApiResponse[RuleVersionOut]:
     """紧急回滚：当前版本转 RETIRED，目标版本（缺省取最近 RETIRED）转 ACTIVE。"""
     if not req.approver_id:
@@ -405,14 +447,14 @@ async def rollback_rule(
     return ApiResponse(data=_version_to_out(rule, target))
 
 
-@router.get("/{rule_id}/hits", response_model=ApiResponse[PageResponse[dict]])
+@router.get("/{rule_id}/hits", response_model=ApiResponse[PageResponse[dict[str, Any]]])
 async def rule_hits(
     rule_id: str,
     page: int = 1,
     page_size: int = 20,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("rule:read")),
-) -> ApiResponse[PageResponse[dict]]:
+    _user: dict[str, Any] = Depends(require_scope("rule:read")),
+) -> ApiResponse[PageResponse[dict[str, Any]]]:
     """查询规则历史命中（scores.rule_hits JSONB 包含该规则的评分记录）。"""
     async with session_scope(tenant_id) as session:
         await _load_rule(session, rule_id, tenant_id)

@@ -135,7 +135,7 @@ def test_heuristic_fallback_amount_tiers(
 async def test_score_sync_kill_switch_active_uses_heuristic(monkeypatch) -> None:
     """L1 全局 Kill Switch 激活时短路返回启发式兜底结果。"""
 
-    async def fake_is_active(scope: KillSwitchScope) -> bool:
+    async def fake_is_active(scope: KillSwitchScope, target: str | None = None) -> bool:
         return True
 
     monkeypatch.setattr(scoring_module.kill_switch, "is_active", fake_is_active)
@@ -146,11 +146,38 @@ async def test_score_sync_kill_switch_active_uses_heuristic(monkeypatch) -> None
     assert result.latency_ms >= 0
 
 
+async def test_score_sync_l2_model_kill_switch_uses_heuristic(monkeypatch) -> None:
+    """L2 模型级 Kill Switch（按版本 target）激活时同样降级为启发式兜底。
+
+    回归：此前 drift_check 激活 L2 后无任何消费路径，熔断形同虚设。
+    """
+    seen: list[tuple[KillSwitchScope, str | None]] = []
+
+    async def fake_is_active(scope: KillSwitchScope, target: str | None = None) -> bool:
+        seen.append((scope, target))
+        return scope == KillSwitchScope.L2_MODEL
+
+    async def fake_rule(transaction: dict, tenant_id: str) -> RuleResult:
+        raise AssertionError("模型熔断时不应再调用规则/ML 评分")
+
+    async def fake_ml(**kwargs: Any) -> ModalityScores:
+        raise AssertionError("模型熔断时不应再调用规则/ML 评分")
+
+    monkeypatch.setattr(scoring_module.kill_switch, "is_active", fake_is_active)
+    monkeypatch.setattr(scoring_module.rule_engine, "evaluate", fake_rule)
+    monkeypatch.setattr(scoring_module.ml_engine, "predict_parallel", fake_ml)
+
+    result = await orch.score_sync({"external_tx_id": "T3", "amount": 100}, TENANT)
+    assert result.model_version == "heuristic_v1"
+    # 必须以 _ACTIVE_MODEL_VERSION 为 target 检查过 L2（与 drift_check 激活口径一致）
+    assert (KillSwitchScope.L2_MODEL, scoring_module._ACTIVE_MODEL_VERSION) in seen
+
+
 async def test_score_sync_tokenizes_pan_when_card_token_missing(monkeypatch) -> None:
     """仅提供 PAN 时主路径先 Tokenization 再评分，且交易体被回填 token。"""
     tokenized: list[str] = []
 
-    async def fake_is_active(scope: KillSwitchScope) -> bool:
+    async def fake_is_active(scope: KillSwitchScope, target: str | None = None) -> bool:
         return False
 
     async def fake_rule(transaction: dict, tenant_id: str) -> RuleResult:
@@ -318,8 +345,20 @@ async def test_cache_score_writes_json_payload_with_ttl(monkeypatch) -> None:
         "risk_band": "MEDIUM",
         "decision_id": "dec_test",
         "model_version": "ml_xgb_v3.2.1",
+        "user_account_id": None,
     }
     assert ttl == settings.scoring_cache_ttl_seconds
+
+
+async def test_cache_score_records_user_for_pipl_cleanup(monkeypatch) -> None:
+    """缓存载荷携带 user_account_id：PIPL 被遗忘权按用户精确清理的前提。"""
+    redis = _FakeRedis()
+    monkeypatch.setattr("app.db.redis.get_redis", lambda: redis)
+
+    await orch._cache_score(TENANT, "tx_cache_2", _result(), user_account_id="U007")
+
+    _, value, _ = redis.sets[0]
+    assert json.loads(value)["user_account_id"] == "U007"
 
 
 async def test_cache_score_redis_failure_does_not_raise(monkeypatch) -> None:

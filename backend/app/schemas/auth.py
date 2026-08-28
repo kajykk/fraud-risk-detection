@@ -25,17 +25,24 @@ class Token(BaseModel):
 
 
 class RefreshTokenRequest(BaseModel):
-    """POST /auth/refresh 请求体。"""
+    """POST /auth/refresh 请求体。
 
-    refresh_token: str
+    refresh_token 可选：标准路径从 HttpOnly Cookie 读取；
+    请求体字段保留用于 API 直连客户端 / 旧版本前端兼容。
+    """
+
+    refresh_token: str | None = None
 
 
 class LoginRequest(BaseModel):
-    """POST /auth/login 请求体（用户名密码登录）。"""
+    """POST /auth/login 请求体（用户名密码登录）。
+
+    安全约束：scope 一律由服务端按用户角色派生（auth._default_scopes），
+    不接受客户端声明，防止越权提升。
+    """
 
     username: str
     password: str
-    scopes: list[str] | None = None
 
 
 class UserInfo(BaseModel):

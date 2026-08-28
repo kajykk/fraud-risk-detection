@@ -1,4 +1,4 @@
-"""通用响应/分页/枚举（D05 §2.3 / §2.4）。
+﻿"""通用响应/分页/枚举（D05 §2.3 / §2.4）。
 
 统一响应格式：
     { "code": "OK", "message": "...", "data": ..., "request_id": "...",
@@ -14,7 +14,7 @@ from typing import TypeVar
 from pydantic import BaseModel, Field
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
@@ -33,6 +33,7 @@ class ErrorCode(StrEnum):
     VALIDATION_FAILED = "VALIDATION_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
     CIRCUIT_OPEN = "CIRCUIT_OPEN"
+    KILL_SWITCH_ACTIVE = "KILL_SWITCH_ACTIVE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     # 规则相关
     RULE_DSL_INVALID = "RULE_DSL_INVALID"

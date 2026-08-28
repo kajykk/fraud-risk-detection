@@ -29,6 +29,7 @@ import {
   formatDate,
   formatPercent
 } from '@/utils/format'
+import { requireApproverId } from '@/utils/permission'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -46,7 +47,11 @@ const query = reactive({
   page_size: 20
 })
 
+// 请求序号守卫：快速翻页/改页大小时，旧响应不得覆盖新响应
+let fetchSeq = 0
+
 async function fetchData() {
+  const seq = ++fetchSeq
   loading.value = true
   const svc = ElLoading.service({ lock: true, text: '加载中...' })
   try {
@@ -58,12 +63,22 @@ async function fetchData() {
       channel: query.channel || undefined
     }
     const res = await listRules(params)
+    if (seq !== fetchSeq) return // 过期响应丢弃
     list.value = res.items
     total.value = res.total
+  } catch {
+    // 错误提示由 axios 拦截器统一处理
   } finally {
-    loading.value = false
-    svc.close()
+    if (seq === fetchSeq) {
+      loading.value = false
+      svc.close()
+    }
   }
+}
+
+function handleSizeChange() {
+  query.page = 1
+  fetchData()
 }
 
 function goEdit(row: any) {
@@ -83,13 +98,18 @@ async function promote(row: any) {
       cancelButtonText: '取消'
     })
     const canaryPct = Math.min(100, Math.max(0, Number(value) || 0))
+    const approverId = requireApproverId(auth.user?.user_id)
+    if (!approverId) {
+      ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+      return
+    }
     const svc = ElLoading.service({ lock: true, text: '提交中...' })
     try {
       await promoteRule(row.rule_id, {
         from_status: row.status,
         to_status: row.status === RuleStatus.DRAFT ? RuleStatus.CANARY : RuleStatus.ACTIVE as any,
         canary_percentage: canaryPct,
-        approver_id: auth.user?.user_id || ''
+        approver_id: approverId
       })
       ElMessage.success('已推进')
       await fetchData()
@@ -112,11 +132,16 @@ async function rollback(row: any) {
       ElMessage.warning('请填写回滚原因')
       return
     }
+    const approverId = requireApproverId(auth.user?.user_id)
+    if (!approverId) {
+      ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+      return
+    }
     const svc = ElLoading.service({ lock: true, text: '提交中...' })
     try {
       await rollbackRule(row.rule_id, {
         reason: value,
-        approver_id: auth.user?.user_id || ''
+        approver_id: approverId
       })
       ElMessage.success('已回滚')
       await fetchData()
@@ -268,7 +293,7 @@ onMounted(fetchData)
         layout="total, sizes, prev, pager, next, jumper"
         :page-sizes="[10, 20, 50, 100]"
         @current-change="fetchData"
-        @size-change="fetchData"
+        @size-change="handleSizeChange"
         style="margin-top: 16px; justify-content: flex-end"
       />
     </ElCard>

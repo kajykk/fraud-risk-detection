@@ -1,7 +1,8 @@
-"""依赖注入：get_db / get_current_user / get_tenant。"""
+﻿"""依赖注入：get_db / get_current_user / get_tenant。"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request
@@ -35,10 +36,10 @@ async def get_tenant_id(request: Request) -> str:
     tenant_id = getattr(request.state, "tenant_id", None)
     if not tenant_id:
         raise UnauthorizedError("missing tenant_id context")
-    return tenant_id
+    return str(tenant_id)
 
 
-def require_scope(scope: str):
+def require_scope(scope: str) -> Callable[[Request], Any]:
     """依赖工厂：校验当前调用方是否具备指定 scope。
 
     支持两种凭据：

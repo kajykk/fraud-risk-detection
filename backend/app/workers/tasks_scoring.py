@@ -31,7 +31,7 @@ from app.workers.celery_app import celery_app
 logger = get_task_logger(__name__)
 
 
-class LoggedTask(Task):
+class LoggedTask(Task): # type: ignore[misc]
     """自定义 Task 基类：在 worker 进程启动时配置 structlog。"""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -39,7 +39,7 @@ class LoggedTask(Task):
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="scoring.score_async",
     bind=True,
     base=LoggedTask,
@@ -109,7 +109,7 @@ def score_async(
         raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1)) from exc
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="scoring.persist_score",
     bind=True,
     base=LoggedTask,
@@ -159,7 +159,7 @@ def persist_score(
     return {"status": "PERSISTED", "transaction_id": transaction_id}
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="scoring.persist_transaction",
     bind=True,
     base=LoggedTask,
@@ -224,7 +224,7 @@ def persist_transaction(
     return {"status": "PERSISTED", "external_tx_id": transaction_data.get("external_tx_id")}
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="scoring.generate_case",
     bind=True,
     base=LoggedTask,
@@ -399,7 +399,7 @@ async def _notify_case_created_async(tenant_id: str, payload: dict[str, Any]) ->
             logger.warning("celery_send_task_failed", task="webhook.deliver", error=str(exc))
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="scoring.drift_check",
     bind=True,
     base=LoggedTask,
@@ -441,78 +441,89 @@ def drift_check(self: LoggedTask) -> dict[str, Any]:
                 )
                 continue
 
-            for model_version in versions:
-                try:
-                    with sync_session_scope(tenant_str) as session:
-                        current = session.execute(
-                            select(Score.risk_score).where(
-                                Score.model_version == model_version,
-                                Score.created_at >= hour_ago,
-                            )
-                        ).scalars().all()
-                        reference = session.execute(
-                            select(Score.risk_score).where(
-                                Score.model_version == model_version,
-                                Score.created_at >= week_ago,
-                                Score.created_at < hour_ago,
-                            )
-                        ).scalars().all()
-
-                    if len(current) < 30 or len(reference) < 100:
-                        continue  # 样本不足跳过
-
-                    psi = compute_psi([float(s) for s in current], [float(s) for s in reference])
-                    severity, is_drifted = classify_severity(psi)
-                    alert_counts["checked"] += 1
-                    if is_drifted:
-                        alert_counts["drifted"] += 1
-                    if severity == "CRITICAL":
-                        alert_counts["critical"] += 1
-
-                    with sync_session_scope(tenant_str) as session:
-                        session.add(
-                            DriftAlert(
-                                tenant_id=uuid.UUID(tenant_str),
-                                model_version=model_version,
-                                modality="fused",
-                                metric_type="PSI",
-                                metric_value=Decimal(str(round(psi, 4))),
-                                threshold=Decimal("0.1"),
-                                severity=severity,
-                                detected_at=now,
-                            )
+        drifted_versions: list[str] = []
+        for model_version in versions:
+            try:
+                with sync_session_scope(tenant_str) as session:
+                    # 限制单次拉取行数：全量拉取在数据量增长后会造成慢查询/OOM
+                    current = session.execute(
+                        select(Score.risk_score)
+                        .where(
+                            Score.model_version == model_version,
+                            Score.created_at >= hour_ago,
                         )
+                        .order_by(Score.created_at.desc())
+                        .limit(50000)
+                    ).scalars().all()
+                    reference = session.execute(
+                        select(Score.risk_score)
+                        .where(
+                            Score.model_version == model_version,
+                            Score.created_at >= week_ago,
+                            Score.created_at < hour_ago,
+                        )
+                        .order_by(Score.created_at.desc())
+                        .limit(50000)
+                    ).scalars().all()
 
-                    logger.info(
-                        "drift_check_model",
-                        tenant_id=tenant_str,
-                        model_version=model_version,
-                        psi=round(psi, 4),
-                        severity=severity,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "drift_check_model_failed",
-                        tenant_id=tenant_str,
-                        model_version=model_version,
-                        error=str(exc),
+                if len(current) < 30 or len(reference) < 100:
+                    continue  # 样本不足跳过
+
+                psi = compute_psi([float(s) for s in current], [float(s) for s in reference])
+                severity, is_drifted = classify_severity(psi)
+                alert_counts["checked"] += 1
+                if is_drifted:
+                    alert_counts["drifted"] += 1
+                if severity == "CRITICAL":
+                    alert_counts["critical"] += 1
+                    drifted_versions.append(model_version)
+
+                with sync_session_scope(tenant_str) as session:
+                    session.add(
+                        DriftAlert(
+                            tenant_id=uuid.UUID(tenant_str),
+                            model_version=model_version,
+                            modality="fused",
+                            metric_type="PSI",
+                            metric_value=Decimal(str(round(psi, 4))),
+                            threshold=Decimal("0.1"),
+                            severity=severity,
+                            detected_at=now,
+                        )
                     )
 
-        # PSI ≥ 0.25（CRITICAL）→ L2 模型级 Kill Switch（ADR-013，全局熔断）
-        if alert_counts["critical"] > 0:
-            # Celery 同步上下文：创建临时事件循环调用异步 kill_switch
+                logger.info(
+                    "drift_check_model",
+                    tenant_id=tenant_str,
+                    model_version=model_version,
+                    psi=round(psi, 4),
+                    severity=severity,
+                )
+            except Exception as exc:
+                logger.error(
+                    "drift_check_model_failed",
+                    tenant_id=tenant_str,
+                    model_version=model_version,
+                    error=str(exc),
+                )
+
+        # PSI ≥ 0.25（CRITICAL）→ 按漂移的具体模型版本激活 L2 Kill Switch（ADR-013）
+        # target 必须与评分路径消费侧（scoring._ACTIVE_MODEL_VERSION）一致，
+        # 否则激活后无任何代码路径消费，熔断形同虚设
+        if drifted_versions:
             import asyncio
 
             from app.services.kill_switch import KillSwitchScope, kill_switch
 
-            asyncio.run(
-                kill_switch.activate(
-                    scope=KillSwitchScope.L2_MODEL,
-                    target="fused",
-                    reason=f"drift_check critical: {alert_counts['critical']} model(s) PSI>=0.25",
-                    operator_id=uuid.UUID("00000000-0000-0000-0000-000000000000"),
+            for mv in drifted_versions:
+                asyncio.run(
+                    kill_switch.activate(
+                        scope=KillSwitchScope.L2_MODEL,
+                        target=mv,
+                        reason=f"drift_check: model {mv} PSI>=0.25 (critical)",
+                        operator_id=uuid.UUID("00000000-0000-0000-0000-000000000000"),
+                    )
                 )
-            )
     except Exception as exc:
         logger.error("drift_check_failed", error=str(exc))
         return {"status": "FAILED", "error": str(exc)}
@@ -521,7 +532,7 @@ def drift_check(self: LoggedTask) -> dict[str, Any]:
     return {"status": "COMPLETED", **alert_counts}
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="scoring.psi_report",
     bind=True,
     base=LoggedTask,
@@ -561,10 +572,13 @@ def psi_report(self: LoggedTask) -> dict[str, Any]:
             for model_version in versions:
                 with sync_session_scope(tenant_str) as session:
                     scores = session.execute(
-                        select(Score.risk_score).where(
+                        select(Score.risk_score)
+                        .where(
                             Score.model_version == model_version,
                             Score.created_at >= week_ago,
                         )
+                        .order_by(Score.created_at.desc())
+                        .limit(50000)
                     ).scalars().all()
                 if len(scores) < 100:
                     continue
@@ -580,19 +594,8 @@ def psi_report(self: LoggedTask) -> dict[str, Any]:
                         "period": f"{week_ago.isoformat()}/{now.isoformat()}",
                     }
                 )
-                with sync_session_scope(tenant_str) as session:
-                    session.add(
-                        DriftAlert(
-                            tenant_id=uuid.UUID(tenant_str),
-                            model_version=model_version,
-                            modality="fused",
-                            metric_type="PSI",
-                            metric_value=Decimal(str(round(high_ratio, 4))),
-                            threshold=Decimal("0.1"),
-                            severity="LOW",
-                            detected_at=now,
-                        )
-                    )
+                # 注意：高风险占比不是 PSI，不再伪装成 metric_type="PSI" 写入
+                # drift_alerts（会污染 /models/{id}/drift 的真实 PSI 读数）
     except Exception as exc:
         logger.error("psi_report_failed", error=str(exc))
         return {"status": "FAILED", "error": str(exc)}

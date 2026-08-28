@@ -42,18 +42,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
-            if method in AUDITED_METHODS:
-                if response is not None:
-                    # 挂载为响应后台任务：响应发送给客户端后再落库，
-                    # 审计耗时不计入接口延迟（评分接口 P99 关键路径）
-                    response.background = StarletteBackgroundTask(
-                        self._emit_audit_log, request, response, duration_ms
-                    )
-                else:
-                    # call_next 抛异常（无 response）：同步兜底落库
-                    await self._emit_audit_log(request, response, duration_ms)
+            if method in AUDITED_METHODS and response is not None:
+                # 挂载为响应后台任务：响应发送给客户端后再落库，
+                # 审计耗时不计入接口延迟（评分接口 P99 关键路径）
+                response.background = StarletteBackgroundTask(
+                    self._emit_audit_log, request, response, duration_ms
+                )
 
-        return response  # type: ignore[return-value]
+        return response
 
     async def _emit_audit_log(self, request: Request, response: Response | None, duration_ms: int) -> None:
         """发送审计日志事件（哈希链落库，失败仅记日志）。"""
@@ -107,7 +103,7 @@ def _extract_resource_id(path: str) -> str | None:
         "test", "deliveries", "feedback", "tasks", "community-detection", "login",
         "token", "refresh", "me", "profile", "related", "embedding",
     }:
-        candidate = parts[-2] if len(parts) >= 4 else None
+        return parts[-2] if len(parts) >= 4 else None
     return candidate
 
 

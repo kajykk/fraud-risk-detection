@@ -1,4 +1,4 @@
-"""租户与商户模型（D04 V1.1 §3.1）。
+﻿"""租户与商户模型（D04 V1.1 §3.1）。
 
 表：tenants / merchants / api_keys
 """
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin, TimestampMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

@@ -1,4 +1,4 @@
-"""PIPL 合规模型（D04 V1.1 §3.8-3.10）。
+﻿"""PIPL 合规模型（D04 V1.1 §3.8-3.10）。
 
 表：consent_records / deletion_requests / fairness_reports
 （V1.1 新增三张 PIPL 合规表，均启用 RLS）
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
@@ -41,6 +41,8 @@ class ConsentRecord(Base, PKMixin, TenantMixin):
     withdrawn_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # 撤回原因（PIPL §16 留痕，0007 迁移新增；撤回端点持久化）
+    withdrawal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # purpose: TRANSACTION_SCORING / FRAUD_DETECTION / AML_REPORT / MARKETING / RESEARCH
     purpose: Mapped[str] = mapped_column(String(100), nullable=False)
     # legal_basis: CONSENT / CONTRACT / LEGAL_OBLIGATION

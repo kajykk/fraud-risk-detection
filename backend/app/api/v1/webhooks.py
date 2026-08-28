@@ -1,4 +1,4 @@
-"""Webhook 路由（D05 §11）。
+﻿"""Webhook 路由（D05 §11）。
 
 CRUD + challenge 验证 + /test + /deliveries。
 
@@ -19,14 +19,16 @@ CRUD + challenge 验证 + /test + /deliveries。
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select
 
 from app.api.deps import get_tenant_id, require_scope
@@ -79,7 +81,7 @@ def _parse_merchant_id(value: str | None) -> uuid.UUID:
 
 
 async def _load_merchant_by_id(
-    session, merchant_id: uuid.UUID, tenant_id: str
+    session: Any, merchant_id: uuid.UUID, tenant_id: str
 ) -> Merchant:
     """按主键加载租户内商户（webhook 配置载体），找不到抛 NotFoundError。"""
     return await _load_merchant(session, str(merchant_id), tenant_id)
@@ -105,7 +107,7 @@ def _merchant_to_out(merchant: Merchant) -> WebhookOut:
     )
 
 
-async def _load_merchant(session, webhook_id: str, tenant_id: str) -> Merchant:
+async def _load_merchant(session: Any, webhook_id: str, tenant_id: str) -> Merchant:
     """按主键加载商户（webhook 配置载体），找不到抛 NotFoundError。"""
     result = await session.execute(
         select(Merchant).where(
@@ -116,14 +118,28 @@ async def _load_merchant(session, webhook_id: str, tenant_id: str) -> Merchant:
     merchant = result.scalar_one_or_none()
     if merchant is None:
         raise NotFoundError(f"webhook not found: {webhook_id}")
-    return merchant
+    return cast(Merchant, merchant)
+
+
+async def _validated_url(url: str) -> str:
+    """SSRF 校验并返回规范化 URL。
+
+    validate_webhook_url 内含阻塞 DNS 解析，放入线程池避免卡住事件循环。
+    非法 URL（非 https / 内网地址 / 凭证内嵌等）抛 ValueError。
+    """
+    return await asyncio.to_thread(validate_webhook_url, url)
 
 
 async def _run_challenge(url: str, challenge_id: str) -> bool:
     """发送 challenge 回调：目标须响应 2xx 且响应体回显 challenge_id。
 
     通过校验 → True；网络/非 2xx/无回显 → False（保持 PENDING_VERIFICATION）。
+    安全：发起请求前强制 SSRF 校验（纵深防御，调用方已校验亦不豁免）。
     """
+    try:
+        url = await _validated_url(url)
+    except ValueError:
+        return False
     try:
         async with httpx.AsyncClient(timeout=_CHALLENGE_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -139,7 +155,7 @@ async def _run_challenge(url: str, challenge_id: str) -> bool:
         return False
 
 
-def _set_pending(merchant: Merchant, risk_profile: dict, challenge_id: str) -> None:
+def _set_pending(merchant: Merchant, risk_profile: dict[str, Any], challenge_id: str) -> None:
     """进入待验证状态。"""
     merchant.status = "PENDING_VERIFICATION"
     risk_profile["webhook_status"] = "PENDING_VERIFICATION"
@@ -150,7 +166,7 @@ def _set_pending(merchant: Merchant, risk_profile: dict, challenge_id: str) -> N
 async def create_webhook(
     req: WebhookCreate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookOut]:
     """注册 Webhook。
 
@@ -160,15 +176,24 @@ async def create_webhook(
       否则保持 PENDING_VERIFICATION 直至 POST /{id}/challenge/verify
     """
     merchant_id = _parse_merchant_id(req.merchant_id)
+    # SSRF 防线：任何出站请求（challenge）与落库之前先校验 URL
+    try:
+        webhook_url = await _validated_url(req.url)
+    except ValueError as exc:
+        raise FRDError(
+            f"invalid webhook url: {exc}",
+            code="INVALID_PARAMS",
+            http_status=400,
+        ) from exc
     challenge_id = f"ch_{uuid.uuid4()}"
     verified = False
     if req.challenge_expected:
-        verified = await _run_challenge(req.url, challenge_id)
+        verified = await _run_challenge(webhook_url, challenge_id)
 
     async with session_scope(tenant_id) as session:
         # 仅定位请求体指定的商户（租户隔离），不覆写其他商户，也不自动创建
         merchant = await _load_merchant_by_id(session, merchant_id, tenant_id)
-        merchant.webhook_url = req.url
+        merchant.webhook_url = webhook_url
         merchant.webhook_secret = encrypt_webhook_secret(req.secret)
         risk_profile = dict(merchant.risk_profile or {})
         risk_profile["webhook_events"] = list(req.events)
@@ -186,10 +211,10 @@ async def create_webhook(
 
 @router.get("", response_model=ApiResponse[PageResponse[WebhookOut]])
 async def list_webhooks(
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:read")),
 ) -> ApiResponse[PageResponse[WebhookOut]]:
     """分页查询 Webhook 列表（已配置 webhook 的商户）。"""
     async with session_scope(tenant_id) as session:
@@ -221,7 +246,7 @@ async def list_webhooks(
 async def get_webhook(
     webhook_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:read")),
 ) -> ApiResponse[WebhookOut]:
     """查询 Webhook 详情。"""
     async with session_scope(tenant_id) as session:
@@ -234,7 +259,7 @@ async def update_webhook(
     webhook_id: str,
     req: WebhookUpdate,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookOut]:
     """更新 Webhook（URL/secret 变更时重发 challenge 验证；secret 省略则保留原值）。
 
@@ -257,9 +282,19 @@ async def update_webhook(
             http_status=400,
         )
 
+    # SSRF 防线：任何出站请求（challenge）与落库之前先校验 URL
+    try:
+        webhook_url = await _validated_url(req.url)
+    except ValueError as exc:
+        raise FRDError(
+            f"invalid webhook url: {exc}",
+            code="INVALID_PARAMS",
+            http_status=400,
+        ) from exc
+
     async with session_scope(tenant_id) as session:
         merchant = await _load_merchant_by_id(session, body_merchant_id, tenant_id)
-        merchant.webhook_url = req.url
+        merchant.webhook_url = webhook_url
         if req.secret is not None:
             merchant.webhook_secret = encrypt_webhook_secret(req.secret)
         elif merchant.webhook_secret is None:
@@ -270,7 +305,7 @@ async def update_webhook(
             risk_profile["secret_hash"] = _secret_hash(req.secret)
 
         challenge_id = f"ch_{uuid.uuid4()}"
-        verified = await _run_challenge(req.url, challenge_id)
+        verified = await _run_challenge(webhook_url, challenge_id)
         if verified or not req.challenge_expected:
             merchant.status = "ACTIVE"
             risk_profile["webhook_status"] = "ACTIVE"
@@ -285,9 +320,9 @@ async def update_webhook(
 @router.post("/{webhook_id}/challenge/verify", response_model=ApiResponse[WebhookOut])
 async def verify_webhook_challenge(
     webhook_id: str,
-    body: dict,
+    body: dict[str, Any],
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookOut]:
     """手工验证 challenge（目标未能在注册时回显时，由运维/合规补验证）。"""
     challenge_id = body.get("challenge_id")
@@ -310,7 +345,7 @@ async def verify_webhook_challenge(
 async def delete_webhook(
     webhook_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:write")),
 ) -> None:
     """注销 Webhook（清空 webhook_url/secret，标记状态）。"""
     async with session_scope(tenant_id) as session:
@@ -331,7 +366,7 @@ async def test_webhook(
     webhook_id: str,
     req: WebhookTestRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:write")),
 ) -> ApiResponse[WebhookTestResponse]:
     """手动触发测试事件投递（HMAC 签名 + httpx 投递，3s 超时）。"""
     async with session_scope(tenant_id) as session:
@@ -346,7 +381,7 @@ async def test_webhook(
 
     # 投递前 SSRF 校验（与 deliver() 对齐，防库中陈旧/被篡改 URL 打内网）
     try:
-        webhook_url = validate_webhook_url(webhook_url)
+        webhook_url = await _validated_url(webhook_url)
     except ValueError as exc:
         return ApiResponse(
             data=WebhookTestResponse(
@@ -406,10 +441,10 @@ async def test_webhook(
 @router.get("/{webhook_id}/deliveries", response_model=ApiResponse[PageResponse[WebhookDeliveryOut]])
 async def list_deliveries(
     webhook_id: str,
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("webhook:write")),
+    _user: dict[str, Any] = Depends(require_scope("webhook:read")),
 ) -> ApiResponse[PageResponse[WebhookDeliveryOut]]:
     """查询 Webhook 投递记录（暂无投递表，返回空分页预留）。"""
     async with session_scope(tenant_id) as session:

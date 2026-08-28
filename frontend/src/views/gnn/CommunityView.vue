@@ -109,7 +109,9 @@ async function fetchRelated() {
     for (const e of res.edges) {
       edgesDs.add({
         ...e,
-        id: `${e.from}-${e.to}-${e.type}`,
+        // 并行边（同节点对同类型多条）会生成重复 ID，DataSet.add 遇重复即抛异常
+        // → 图渲染半途而废。追加序号保证唯一。
+        id: `${e.from}-${e.to}-${e.type}-${edgesDs.length}`,
         label: e.type
       } as any)
     }
@@ -151,7 +153,21 @@ async function startDetect() {
       algorithm: detectForm.algorithm
     })
     ElMessage.success(`检测任务已提交：${currentTask.value.task_id}`)
-    startPolling()
+    // GNN 服务为同步执行：结果已在本次响应中返回，无需轮询；
+    // 仅当后端返回异步任务语义（RUNNING/PENDING）时才进入轮询
+    const t = currentTask.value
+    if (t.status === 'SUCCEEDED') {
+      if (t.communities?.length) {
+        ElMessage.success(`检测完成，识别 ${t.communities.length} 个团伙`)
+        await loadCommunity(t.communities[0])
+      } else {
+        ElMessage.info('检测完成，未识别到满足阈值的团伙')
+      }
+    } else if (t.status === 'FAILED' || t.status === 'TIMEOUT') {
+      ElMessage.error(`检测${t.status === 'TIMEOUT' ? '超时' : '失败'}`)
+    } else {
+      startPolling()
+    }
   } finally {
     svc.close()
   }
@@ -160,10 +176,12 @@ async function startDetect() {
 function startPolling() {
   stopPolling()
   if (!currentTask.value) return
+  let failures = 0
   pollTimer = setInterval(async () => {
     if (!currentTask.value) return
     try {
       const t = await getCommunityTask(currentTask.value.task_id)
+      failures = 0
       currentTask.value = t
       if (t.status === 'SUCCEEDED' && t.communities?.length) {
         ElMessage.success(`检测完成，识别 ${t.communities.length} 个团伙`)
@@ -174,7 +192,12 @@ function startPolling() {
         stopPolling()
       }
     } catch {
-      stopPolling()
+      // 网络抖动不应永久终止轮询：连续失败 3 次才停止
+      failures += 1
+      if (failures >= 3) {
+        ElMessage.error('任务状态查询连续失败，已停止轮询')
+        stopPolling()
+      }
     }
   }, 3000)
 }
@@ -209,7 +232,14 @@ onMounted(() => {
   }
 })
 
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => {
+  stopPolling()
+  // vis Network 绑定 DOM 与事件监听，不销毁会随反复进出页面累积泄漏
+  if (network) {
+    network.destroy()
+    network = null
+  }
+})
 </script>
 
 <template>

@@ -1,0 +1,15 @@
+# 构建上下文瘦身：防止本地模型工件/缓存/测试进入镜像层
+.git
+.gitignore
+.hypothesis
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.log
+models/
+tests/
+requirements-dev.txt
+Dockerfile
+.dockerignore

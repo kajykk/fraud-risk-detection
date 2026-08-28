@@ -69,9 +69,16 @@ async function submitPassword() {
   pwdForm.confirm = ''
 }
 
-async function submitNotifPrefs() {
-  ElMessage.success('通知偏好已保存（本地缓存）')
-  // TODO: 调用 PATCH /users/me/preferences
+const NOTIF_PREFS_KEY = 'frd_notif_prefs'
+
+// 通知偏好暂无后端端点：如实持久化到本地并明确告知"仅本机生效"
+function submitNotifPrefs() {
+  try {
+    localStorage.setItem(NOTIF_PREFS_KEY, JSON.stringify({ ...notifPrefs }))
+    ElMessage.info('已保存到本机（通知偏好服务端 API 待接入，不会同步到其他设备）')
+  } catch {
+    ElMessage.error('保存失败')
+  }
 }
 
 const tokens = ref([] as Array<Record<string, unknown>>)
@@ -85,21 +92,21 @@ async function createToken() {
   ElMessage.info('API Token 生成与管理端点待接入（D05 §3 待补齐），当前无可用 Tokens')
 }
 
-async function revokeToken(row: any) {
-  await ElMessageBox.confirm('确认吊销该 Token？此操作不可恢复。', '吊销确认', { type: 'warning' })
-  tokens.value = tokens.value.filter((t) => t.token_id !== row.token_id)
-  ElMessage.success('已吊销')
+async function revokeToken(_row: Record<string, unknown>) {
+  // Token 管理端点未接入（列表恒为空，此路径当前不可达）；
+  // 不做假成功提示，避免运维误以为吊销已生效
+  ElMessage.warning('Token 吊销 API 待接入，操作未生效')
 }
 
 const sessions = ref([] as Array<Record<string, unknown>>)
 
-async function revokeSession(row: any) {
+async function revokeSession(row: Record<string, unknown>) {
   if (row.current) {
     ElMessage.warning('不能注销当前会话，请使用退出登录')
     return
   }
-  sessions.value = sessions.value.filter((s) => s.session_id !== row.session_id)
-  ElMessage.success('已注销')
+  // 会话管理端点未接入（列表恒为空）：不做假成功提示
+  ElMessage.warning('会话注销 API 待接入，操作未生效')
 }
 
 // ===== 主题 =====
@@ -118,8 +125,12 @@ function onToggleDark() {
 const isTenantAdmin = computed(() => auth.hasRole('TENANT_ADMIN' as UserRole))
 
 async function onSwitchTenant(tenantId: string) {
-  await tenant.switchTenant(tenantId)
-  ElMessage.success('租户已切换')
+  const ok = await tenant.switchTenant(tenantId)
+  if (ok) {
+    ElMessage.success('租户已切换（刷新页面后生效）')
+  } else {
+    ElMessage.error('租户切换失败：目标租户不在可访问列表中')
+  }
 }
 </script>
 

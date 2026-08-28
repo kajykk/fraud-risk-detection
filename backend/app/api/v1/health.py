@@ -52,5 +52,5 @@ async def ready() -> ReadyResponse:
         "redis": "ok" if redis_ok else "fail",
         "neo4j": "ok" if neo4j_ok else "fail",
     }
-    all_ok = all(checks.values())
+    all_ok = all(v == "ok" for v in checks.values())
     return ReadyResponse(status="ok" if all_ok else "degraded", checks=checks)

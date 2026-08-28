@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
@@ -22,6 +22,10 @@ class BehaviorTrainResult:
     model_path: str
     n_samples: int
     metrics: dict[str, float]
+    # holdout 评估数据（pipeline 用于融合层 Stacking 对齐）
+    val_indices: list[int] = field(default_factory=list)
+    val_labels: list[int] = field(default_factory=list)
+    val_probas: list[float] = field(default_factory=list)
 
 
 def _build_model(in_channels: int, seq_len: int):
@@ -79,7 +83,7 @@ def train(
     seq_len: int = 50,
     n_features: int = 8,
 ) -> BehaviorTrainResult:
-    """训练 1D-CNN 行为模型。"""
+    """训练 1D-CNN 行为模型（分层 holdout 评估 + 类别不平衡加权）。"""
     import numpy as np  # type: ignore
     import torch  # type: ignore
     from torch.utils.data import DataLoader, TensorDataset  # type: ignore
@@ -88,12 +92,36 @@ def train(
 
     arrays = [_pad_or_truncate(s, seq_len, n_features) for s in series_list]
     X = torch.from_numpy(np.stack(arrays, axis=0)).float()  # (N, n_features, seq_len)
-    y = torch.tensor(labels, dtype=torch.float32).unsqueeze(1)
-    dataset = TensorDataset(X, y)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    y_np = np.asarray(labels, dtype=np.float32)
+
+    from .evaluate import stratified_split
+
+    train_idx, val_idx = stratified_split(labels)
+
+    X_train = X[train_idx]
+    y_train = torch.from_numpy(y_np[train_idx]).unsqueeze(1)
+    train_dataset = TensorDataset(X_train, y_train)
+    loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
     model = _build_model(n_features, seq_len).to(device)
-    criterion = torch.nn.BCELoss()
+    # 类别不平衡：正样本权重 = 负样本数/正样本数
+    pos = max(sum(1 for lb in labels if lb == 1), 1)
+    neg = max(sum(1 for lb in labels if lb == 0), 1)
+    pos_weight_value = neg / pos
+
+    def _weighted_bce(outputs, targets):
+        import torch  # type: ignore
+
+        eps = 1e-7
+        w = torch.where(
+            targets > 0,
+            torch.full_like(targets, pos_weight_value),
+            torch.ones_like(targets),
+        )
+        return torch.mean(
+            -w * (targets * torch.log(outputs + eps) + (1 - targets) * torch.log(1 - outputs + eps))
+        )
+
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     model.train()
@@ -104,37 +132,49 @@ def train(
             batch_y = batch_y.to(device)
             optimizer.zero_grad()
             outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
+            loss = _weighted_bce(outputs, batch_y)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
+            total_loss += float(loss.item())
         logger.info("behavior.train.epoch", epoch=epoch + 1, total=epochs, loss=total_loss)
 
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), save_path)
 
-    # 评估
+    # 评估：一律在 holdout 上计算（与 structured/text 共享同一 split）
     model.eval()
+    eval_indices = val_idx if val_idx else list(range(len(labels)))
+    eval_X = X[eval_indices]
+    eval_labels = [labels[i] for i in eval_indices]
     probas: list[float] = []
     with torch.no_grad():
-        for batch_x, _ in DataLoader(dataset, batch_size=batch_size):
-            outputs = model(batch_x.to(device)).cpu().numpy().flatten()
+        for i in range(0, len(eval_indices), batch_size):
+            outputs = model(eval_X[i : i + batch_size].to(device)).cpu().numpy().flatten()
             probas.extend(outputs.tolist())
 
     from .evaluate import compute_auc, compute_f1, compute_recall_at_fpr
 
     metrics = {
-        "auc": compute_auc(labels, probas),
-        "f1": compute_f1(labels, [1 if p >= 0.5 else 0 for p in probas]),
-        "recall_at_1pct_fpr": compute_recall_at_fpr(labels, probas, fpr_threshold=0.01),
+        "auc": compute_auc(eval_labels, probas),
+        "f1": compute_f1(eval_labels, [1 if p >= 0.5 else 0 for p in probas]),
+        "recall_at_1pct_fpr": compute_recall_at_fpr(eval_labels, probas, fpr_threshold=0.01),
+        "metric_source": 1.0 if val_idx else 0.0,
     }
     logger.info(
         "behavior.train.done",
         save_path=save_path,
         n_samples=len(labels),
-        metrics=metrics,
+        metric_source="holdout" if val_idx else "train",
+        metrics={k: v for k, v in metrics.items() if k != "metric_source"},
     )
-    return BehaviorTrainResult(model_path=save_path, n_samples=len(labels), metrics=metrics)
+    return BehaviorTrainResult(
+        model_path=save_path,
+        n_samples=len(labels),
+        metrics=metrics,
+        val_indices=val_idx,
+        val_labels=[int(v) for v in eval_labels],
+        val_probas=[float(p) for p in probas],
+    )
 
 
 __all__ = ["train", "BehaviorTrainResult"]

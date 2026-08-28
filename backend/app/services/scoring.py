@@ -36,6 +36,10 @@ from app.services.ws_events import publish_ws_event
 
 logger = get_logger(__name__)
 
+# 当前 ACTIVE 结构化模型版本（模型注册表集成前的占位口径，
+# 与 drift_check 激活 L2_MODEL 时使用的 target 保持一致）
+_ACTIVE_MODEL_VERSION = "ml_xgb_v3.2.1"
+
 
 @dataclass
 class ScoreResult:
@@ -77,10 +81,19 @@ class ScoringOrchestrator:
         start = time.perf_counter()
         decision_id = f"dec_{uuid.uuid4()}"
 
-        # 1. Kill Switch 检查（L1 全局）
+        # 1. Kill Switch 检查（L1 全局 + L2 模型级）
         if await kill_switch.is_active(KillSwitchScope.L1_GLOBAL):
             logger.warning("kill_switch_global_active", tenant_id=tenant_id)
             # 启发式规则兜底（金额阈值）
+            return self._heuristic_fallback(transaction, decision_id, start)
+        if await kill_switch.is_active(KillSwitchScope.L2_MODEL, _ACTIVE_MODEL_VERSION):
+            # L2 由 drift_check（PSI≥0.25）自动激活或人工触发；
+            # 模型熔断期间评分降级为启发式，不再消费可疑模型输出
+            logger.warning(
+                "kill_switch_model_active",
+                tenant_id=tenant_id,
+                model_version=_ACTIVE_MODEL_VERSION,
+            )
             return self._heuristic_fallback(transaction, decision_id, start)
 
         # 2. Tokenization（如未提供 card_token）
@@ -107,7 +120,7 @@ class ScoringOrchestrator:
             decision=decision,
             risk_score=risk_score,
             risk_band=risk_band,
-            model_version="ml_xgb_v3.2.1",  # TODO: 从 model registry 读取 ACTIVE 版本
+            model_version=_ACTIVE_MODEL_VERSION,
             rule_hits=[{"rule_id": r.rule_id, "rule_name": r.rule_name, "severity": r.severity} for r in rule_result.hit_rules],
             modality_scores={
                 "structured": ml_result.structured.score if ml_result.structured else None,
@@ -140,7 +153,12 @@ class ScoringOrchestrator:
         )
 
         # 6. Redis 缓存写入（等待完成；失败降级为仅响应，内部已 catch）
-        await self._cache_score(tenant_id, transaction.get("external_tx_id", ""), result)
+        await self._cache_score(
+            tenant_id,
+            transaction.get("external_tx_id", ""),
+            result,
+            user_account_id=transaction.get("user_id"),
+        )
 
         logger.info(
             "score_sync_completed",
@@ -452,8 +470,18 @@ class ScoringOrchestrator:
         except Exception as exc:
             logger.warning("celery_send_task_failed", task=name, error=str(exc))
 
-    async def _cache_score(self, tenant_id: str, external_tx_id: str, result: ScoreResult) -> None:
-        """Redis 缓存写入（score_cache:{tenant}:{tx_hash}，TTL 24h）。"""
+    async def _cache_score(
+        self,
+        tenant_id: str,
+        external_tx_id: str,
+        result: ScoreResult,
+        user_account_id: str | None = None,
+    ) -> None:
+        """Redis 缓存写入（score_cache:{tenant}:{tx_hash}）。
+
+        payload 携带 user_account_id：PIPL 被遗忘权清理缓存时按用户精确
+        匹配（否则扫描无法定位归属，删除空转）。
+        """
         try:
             import json
 
@@ -467,6 +495,7 @@ class ScoringOrchestrator:
                 "risk_band": result.risk_band.value,
                 "decision_id": result.decision_id,
                 "model_version": result.model_version,
+                "user_account_id": user_account_id,
             }
             await redis.set(key, json.dumps(payload), ex=settings.scoring_cache_ttl_seconds)
         except Exception as exc:

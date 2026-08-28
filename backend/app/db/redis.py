@@ -24,7 +24,7 @@ async def init_redis() -> Redis:
     """应用启动时初始化 Redis 连接池。"""
     global _redis
     if _redis is None:
-        _redis = from_url(
+        _redis = from_url(  # type: ignore[no-untyped-call]
             settings.url,
             encoding="utf-8",
             decode_responses=True,
@@ -52,7 +52,7 @@ def get_redis() -> Redis:
     """
     global _redis
     if _redis is None:
-        _redis = from_url(
+        _redis = from_url(  # type: ignore[no-untyped-call]
             settings.url,
             encoding="utf-8",
             decode_responses=True,

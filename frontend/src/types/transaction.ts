@@ -87,6 +87,8 @@ export interface TransactionDetail {
   explainability: Explainability
   tx_type: TxType
   channel?: Channel
+  /** 交易金额（分）——列表接口由后端直接返回 */
+  amount?: number
   is_3ds_verified?: boolean
   user_created_at?: string
   acquirer_id?: string

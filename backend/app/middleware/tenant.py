@@ -16,6 +16,8 @@ tenant_id 来源优先级（D05 §2.2）：
 
 from __future__ import annotations
 
+from typing import Any
+
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -35,7 +37,7 @@ APIKEY_PREFIX = "ApiKey "
 ADMIN_SCOPE = "admin:*"
 
 
-def _extract_jwt_payload(token: str) -> dict | None:
+def _extract_jwt_payload(token: str) -> dict[str, Any] | None:
     """解码 JWT（不抛错，验证失败返回 None）。"""
     try:
         return decode_token(token)
@@ -89,8 +91,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 if not api_key_service.ip_allowed(
                     request.client.host if request.client else "", key_info.ip_whitelist
                 ):
-                    err = ForbiddenError("client ip not allowed")
-                    return self._error_response(request, err)
+                    return self._error_response(request, ForbiddenError("client ip not allowed"))
                 tenant_id = key_info.tenant_id
                 api_key_scopes = key_info.scopes
                 request.state.api_key_id = key_info.api_key_id
@@ -103,13 +104,16 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 if jwt_has_admin:
                     tenant_id = x_tenant
                 else:
-                    err = ForbiddenError("X-Tenant-Id requires admin:* scope")
-                    return self._error_response(request, err)
+                    return self._error_response(
+                        request, ForbiddenError("X-Tenant-Id requires admin:* scope")
+                    )
             elif x_tenant != tenant_id:
                 # 跨租户覆盖：要求 admin:* scope
                 if not jwt_has_admin:
-                    err = ForbiddenError("cross-tenant X-Tenant-Id requires admin:* scope")
-                    return self._error_response(request, err)
+                    return self._error_response(
+                        request,
+                        ForbiddenError("cross-tenant X-Tenant-Id requires admin:* scope"),
+                    )
                 tenant_id = x_tenant
 
         if tenant_id is None and not path.startswith("/api/v1/auth"):

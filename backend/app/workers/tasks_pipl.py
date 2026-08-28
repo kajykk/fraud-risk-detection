@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from celery import Task
@@ -31,13 +31,104 @@ from app.db.sync_session import sync_session_scope
 from app.models.aml import AmlReport
 from app.models.case import Case
 from app.models.pipl import ConsentRecord, DeletionRequest
-from app.models.transaction import Score, Transaction
+from app.models.transaction import Score, ShapExplanation, Transaction
 from app.workers.celery_app import celery_app
 
 logger = get_task_logger(__name__)
 
+# 反洗钱报告法定保留期（基准 §3.9：7 年）
+AML_RETENTION_YEARS = 7
+# 参与保留判定的报告状态（REJECTED 不构成保留）
+_HOLDING_STATUSES = ("PENDING", "SUBMITTED", "ACCEPTED")
 
-class PiplTask(Task):
+
+def _is_active_legal_hold(report: Any, cutoff: datetime) -> bool:
+    """判定单条 AML 报告是否仍构成法律保留。
+
+    - REJECTED：不保留；
+    - ACCEPTED 且 submitted_at 早于保留期截止线：期满自动解除；
+    - 其余（PENDING / SUBMITTED / 时间缺失的 ACCEPTED）：保守视为保留中。
+    """
+    if report.status == "REJECTED":
+        return False
+    if (
+        report.status == "ACCEPTED"
+        and report.submitted_at is not None
+        and report.submitted_at < cutoff
+    ):
+        return False
+    return True
+
+
+def _collect_active_legal_holds(
+    session: Any,
+    tenant_id: str,
+    user_id: str,
+    cutoff: datetime,
+) -> list[Any]:
+    """收集该数据主体名下仍生效的 AML 法律保留报告。
+
+    三路检索后按保留期谓词过滤：
+    1. 主路径：subject_user_account_id 精确匹配（0006 迁移已回填）；
+    2. 孤儿兜底①：主体列为空的报告经 transaction_id 联表归属；
+    3. 孤儿兜底②：主体列为空的报告经 case_id → cases.transaction_id 二跳归属。
+    合规口径：宁可误拦不可漏放。
+    """
+    tid = uuid.UUID(tenant_id)
+
+    direct = (
+        session.execute(
+            select(AmlReport).where(
+                AmlReport.tenant_id == tid,
+                AmlReport.subject_user_account_id == user_id,
+                AmlReport.status.in_(_HOLDING_STATUSES),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    orphan_via_tx = (
+        session.execute(
+            select(AmlReport)
+            .join(Transaction, Transaction.id == AmlReport.transaction_id)
+            .where(
+                AmlReport.tenant_id == tid,
+                AmlReport.subject_user_account_id.is_(None),
+                AmlReport.status.in_(_HOLDING_STATUSES),
+                Transaction.user_account_id == user_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    orphan_via_case = (
+        session.execute(
+            select(AmlReport)
+            .join(Case, Case.id == AmlReport.case_id)
+            .join(Transaction, Transaction.id == Case.transaction_id)
+            .where(
+                AmlReport.tenant_id == tid,
+                AmlReport.subject_user_account_id.is_(None),
+                AmlReport.status.in_(_HOLDING_STATUSES),
+                Transaction.user_account_id == user_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    active: list[Any] = []
+    seen: set[Any] = set()
+    for report in (*direct, *orphan_via_tx, *orphan_via_case):
+        if report.id in seen:
+            continue
+        seen.add(report.id)
+        if _is_active_legal_hold(report, cutoff):
+            active.append(report)
+    return active
+
+
+class PiplTask(Task): # type: ignore[misc]
     """PIPL 任务基类：启动时配置 structlog。"""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -45,7 +136,7 @@ class PiplTask(Task):
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="pipl.export_data",
     bind=True,
     base=PiplTask,
@@ -209,7 +300,7 @@ def export_data(
     }
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="pipl.delete_data",
     bind=True,
     base=PiplTask,
@@ -257,36 +348,42 @@ def delete_data(
         "graph_nodes": 0,
     }
 
-    # 1. 法律保留检查（反洗钱 7 年保留）
+    # 1. 法律保留检查（反洗钱 7 年保留，按数据主体精确关联，0006 迁移）
     if legal_hold_check:
+        cutoff = datetime.now(UTC) - timedelta(days=AML_RETENTION_YEARS * 365)
         try:
             with sync_session_scope(tenant_id) as session:
-                aml_hold = session.execute(
-                    select(AmlReport).where(AmlReport.tenant_id.isnot(None))
-                ).scalars().all()
-                # 骨架：任何未关闭 AML 报告均视为法律保留（真实实现按 user_id 关联）
-                if aml_hold:
-                    req = session.execute(
-                        select(DeletionRequest).where(
-                            DeletionRequest.id == uuid.UUID(request_id)
-                        )
-                    ).scalar_one_or_none()
-                    if req is not None:
-                        req.status = "BLOCKED"
-                    logger.warning(
-                        "pipl_delete_legal_hold",
-                        tenant_id=tenant_id,
-                        request_id=request_id,
-                        reason="aml_report_retention",
-                    )
-                    return {
-                        "request_id": request_id,
-                        "status": "BLOCKED",
-                        "reason": "legal_hold_conflict",
-                        "deleted_counts": deleted_counts,
-                    }
+                active_holds = _collect_active_legal_holds(
+                    session, tenant_id, str(user_id), cutoff
+                )
         except Exception as exc:
+            # fail-closed：无法确认保留状态时不得执行删除（合规优先），
+            # 抛给 Celery 按 max_retries/delay 自动重试
             logger.error("pipl_delete_legal_hold_check_failed", error=str(exc))
+            raise self.retry(exc=exc) from exc
+
+        if active_holds:
+            with sync_session_scope(tenant_id) as session:
+                req = session.execute(
+                    select(DeletionRequest).where(
+                        DeletionRequest.id == uuid.UUID(request_id)
+                    )
+                ).scalar_one_or_none()
+                if req is not None:
+                    req.status = "BLOCKED"
+            logger.warning(
+                "pipl_delete_legal_hold",
+                tenant_id=tenant_id,
+                request_id=request_id,
+                report_nos=[r.report_no for r in active_holds],
+            )
+            return {
+                "request_id": request_id,
+                "status": "BLOCKED",
+                "reason": "legal_hold_conflict",
+                "report_nos": [r.report_no for r in active_holds],
+                "deleted_counts": deleted_counts,
+            }
 
     try:
         with sync_session_scope(tenant_id) as session:
@@ -304,13 +401,24 @@ def delete_data(
             deleted_counts["transactions"] = len(tx_rows)
 
             # 3. scores 软删（标记 metadata 不存在 → 通过 transactions 引用；直接物理删除衍生评分）
+            score_ids: list[Any] = []
             if tx_ids:
                 score_rows = session.execute(
                     select(Score).where(Score.transaction_id.in_(tx_ids))
                 ).scalars().all()
                 deleted_counts["scores"] = len(score_rows)
+                score_ids = [sc.id for sc in score_rows]
                 for sc in score_rows:
                     session.delete(sc)
+
+            # 3.1 关联 SHAP 解释一并删除（此前计数恒为 0 且从未删除）
+            if score_ids:
+                shap_rows = session.execute(
+                    select(ShapExplanation).where(ShapExplanation.score_id.in_(score_ids))
+                ).scalars().all()
+                deleted_counts["shap_explanations"] = len(shap_rows)
+                for sp in shap_rows:
+                    session.delete(sp)
 
             # 4. consent_records 置为 EXPIRED
             consent_rows = session.execute(
@@ -342,8 +450,16 @@ def delete_data(
                         cursor=cursor, match=f"score_cache:{tenant_id}:*", count=200
                     )
                     for key in keys:
-                        payload = await redis.get(key)
-                        if payload and user_id in payload:
+                        raw = await redis.get(key)
+                        if not raw:
+                            continue
+                        # 按写入时的 user_account_id 精确匹配
+                        # （历史实现 `user_id in payload` 对 JSON 串恒 False，删除空转）
+                        try:
+                            data = json.loads(raw)
+                        except ValueError:
+                            continue
+                        if str(data.get("user_account_id") or "") == str(user_id):
                             await redis.delete(key)
                             removed += 1
                     if cursor == 0:
@@ -372,7 +488,7 @@ def delete_data(
     }
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="pipl.rectify_data",
     bind=True,
     base=PiplTask,
@@ -455,7 +571,7 @@ def rectify_data(
     }
 
 
-@celery_app.task(
+@celery_app.task( # type: ignore[misc]
     name="pipl.notify_subject",
     bind=True,
     base=PiplTask,

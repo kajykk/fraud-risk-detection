@@ -161,6 +161,16 @@ class ShapExplainer:
             base_value = float(base_value[-1])
         output_value = base_value + float(sum(shap_values))
 
+        # binary:logistic 的 base/shap 处于 log-odds（margin）空间；
+        # 消费方（前端/案件人员）按 0-1 概率读取，此处统一换算为概率
+        import math
+
+        def _to_proba(x: float) -> float:
+            return 1.0 / (1.0 + math.exp(-x))
+
+        base_value = _to_proba(base_value)
+        output_value = _to_proba(output_value)
+
         factors = [
             ShapFactor(feature=str(names[i]), value=float(feature_vector[i]), shap_value=float(sv))
             for i, sv in enumerate(shap_values)

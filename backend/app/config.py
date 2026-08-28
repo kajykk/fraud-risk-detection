@@ -92,6 +92,11 @@ class JWTConfig(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
     jwt_refresh_token_expire_days: int = 7
+    # Refresh Token 传输：HttpOnly Cookie（XSS 无法读取）；
+    # 响应体不再下发 refresh_token，旧客户端 body 兼容由 refresh 端点保留
+    refresh_cookie_name: str = "frd_refresh_token"
+    # Cookie 仅作用于认证路径，缩小暴露面
+    refresh_cookie_path: str = "/api/v1/auth"
 
 
 class CeleryConfig(BaseSettings):

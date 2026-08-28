@@ -7,7 +7,11 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
+import { purgeLegacyTokenStorage } from './api/request'
 import './styles/main.css'
+
+// 一次性清理历史版本遗留的本地 token 存储（token 现仅存内存）
+purgeLegacyTokenStorage()
 
 const app = createApp(App)
 

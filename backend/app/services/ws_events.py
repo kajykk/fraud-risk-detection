@@ -1,4 +1,4 @@
-"""WebSocket 实时事件：frd:ws_events 发布/订阅 + 连接管理（D05 §2.8）。
+﻿"""WebSocket 实时事件：frd:ws_events 发布/订阅 + 连接管理（D05 §2.8）。
 
 职责：
 - publish_ws_event：发布完整 WsMessage 结构（event_id/event_type/tenant_id/
@@ -27,6 +27,10 @@ logger = get_logger(__name__)
 
 WS_EVENTS_CHANNEL = "frd:ws_events"
 
+# 单连接事件队列上限：慢消费者撑爆队列会拖垮进程内存；
+# 满时丢弃最旧事件并计数（实时推送允许丢帧，不允许 OOM）
+_WS_QUEUE_MAXSIZE = 256
+
 
 @dataclass(eq=False)
 class WsConnection:
@@ -34,9 +38,12 @@ class WsConnection:
 
     websocket: Any
     tenant_id: str
-    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    queue: asyncio.Queue[dict[str, Any]] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=_WS_QUEUE_MAXSIZE)
+    )
     # None = 订阅全部事件类型；set 为空表示不接收任何事件
     event_types: set[str] | None = None
+    dropped_count: int = 0
 
 
 class ConnectionManager:
@@ -77,7 +84,19 @@ class ConnectionManager:
                 and payload.get("event_type") not in connection.event_types
             ):
                 continue
-            connection.queue.put_nowait(payload)
+            try:
+                connection.queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                # 慢消费者：丢最旧保最新（实时推送语义）
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    connection.queue.get_nowait()
+                connection.queue.put_nowait(payload)
+                connection.dropped_count += 1
+                logger.warning(
+                    "ws_queue_overflow_drop_oldest",
+                    tenant_id=connection.tenant_id,
+                    dropped_total=connection.dropped_count,
+                )
             delivered += 1
         return delivered
 
@@ -171,13 +190,13 @@ async def listen_ws_events() -> None:
         except asyncio.CancelledError:
             if pubsub is not None:
                 with contextlib.suppress(Exception):
-                    await pubsub.aclose()
+                    await pubsub.aclose()  # type: ignore[no-untyped-call]
             raise
         except Exception as exc:
             logger.warning("ws_events_listener_retry", error=str(exc))
             if pubsub is not None:
                 with contextlib.suppress(Exception):
-                    await pubsub.aclose()
+                    await pubsub.aclose()  # type: ignore[no-untyped-call]
             await asyncio.sleep(5)
 
 

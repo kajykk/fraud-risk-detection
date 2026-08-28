@@ -35,6 +35,7 @@ import {
 import type { ModelDetail, ModelDrift, KillSwitchState } from '@/types/model'
 import { ModelStatus } from '@/types/enum'
 import { MODEL_STATUS_LABELS, formatDate, formatPercent } from '@/utils/format'
+import { requireApproverId } from '@/utils/permission'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -112,13 +113,18 @@ function openCanary() {
 
 async function submitCanary() {
   if (!detail.value) return
+  const approverId = requireApproverId(auth.user?.user_id)
+  if (!approverId) {
+    ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+    return
+  }
   const svc = ElLoading.service({ lock: true, text: '提交金丝雀...' })
   try {
     await startCanary(modelId, {
       candidate_model_id: modelId,
       traffic_percentage: canaryForm.traffic_percentage,
       observation_hours: canaryForm.observation_hours,
-      approver_id: auth.user?.user_id || ''
+      approver_id: approverId
     })
     ElMessage.success('金丝雀已启动')
     canaryDialogVisible.value = false
@@ -129,13 +135,18 @@ async function submitCanary() {
 }
 
 function openPromote() {
+  const approverId = requireApproverId(auth.user?.user_id)
+  if (!approverId) {
+    ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+    return
+  }
   ElMessageBox.confirm('确认将模型晋升为 ACTIVE？此操作不可回滚至 CANARY 状态。', '晋升确认', {
     type: 'warning'
   })
     .then(async () => {
       const svc = ElLoading.service({ lock: true, text: '晋升中...' })
       try {
-        await promoteModel(modelId, { approver_id: auth.user?.user_id || '' })
+        await promoteModel(modelId, { approver_id: approverId })
         ElMessage.success('已晋升')
         await fetchAll()
       } finally {
@@ -156,12 +167,17 @@ async function submitRollback() {
     ElMessage.warning('请填写目标模型 ID 与回滚原因')
     return
   }
+  const approverId = requireApproverId(auth.user?.user_id)
+  if (!approverId) {
+    ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+    return
+  }
   const svc = ElLoading.service({ lock: true, text: '回滚中...' })
   try {
     await rollbackModel(modelId, {
       target_model_id: rollbackForm.target_model_id,
       reason: rollbackForm.reason,
-      approver_id: auth.user?.user_id || ''
+      approver_id: approverId
     })
     ElMessage.success('已回滚')
     rollbackDialogVisible.value = false
@@ -182,12 +198,17 @@ async function submitRetire() {
     ElMessage.warning('请填写退役原因')
     return
   }
+  const approverId = requireApproverId(auth.user?.user_id)
+  if (!approverId) {
+    ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+    return
+  }
   await ElMessageBox.confirm('退役后模型将不再参与评分，确认退役？', '退役确认', { type: 'warning' })
   const svc = ElLoading.service({ lock: true, text: '退役中...' })
   try {
     await retireModel(modelId, {
       reason: retireForm.reason,
-      approver_id: auth.user?.user_id || '',
+      approver_id: approverId,
       data_retention_days: retireForm.data_retention_days
     })
     ElMessage.success('已退役')

@@ -1,4 +1,4 @@
-"""模型治理模型（D04 V1.1 §3.5）。
+﻿"""模型治理模型（D04 V1.1 §3.5）。
 
 表：model_versions / drift_alerts
 """
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

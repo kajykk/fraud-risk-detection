@@ -65,3 +65,32 @@ async def test_docs_page_available(client: AsyncClient) -> None:
     response = await client.get("/docs")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_ready_reports_degraded_when_dependency_down(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：任一依赖 fail 时 /ready 必须返回 degraded。
+
+    历史缺陷：all(checks.values()) 对 "fail" 字符串求值为真，
+    导致依赖全挂时探针仍返回 ok，流量继续打入不健康实例。
+    """
+    async def db_fail() -> bool:
+        return False
+
+    async def redis_ok() -> bool:
+        return True
+
+    async def neo4j_ok() -> bool:
+        return True
+
+    monkeypatch.setattr("app.api.v1.health.check_db_health", db_fail)
+    monkeypatch.setattr("app.api.v1.health.check_redis_health", redis_ok)
+    monkeypatch.setattr("app.api.v1.health.check_neo4j_health", neo4j_ok)
+
+    response = await client.get("/ready")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["checks"]["postgres"] == "fail"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +36,20 @@ from .modalities.structured import ModalityScore, StructuredModality
 from .modalities.text import TextModality
 
 logger = structlog.get_logger(__name__)
+
+# 后台任务强引用集（防止 create_task 结果被 GC 中途取消）
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coros: list[Any]) -> None:
+    """后台执行写 Redis 等非关键路径协程；异常仅记日志。"""
+
+    async def _run() -> None:
+        await asyncio.gather(*coros, return_exceptions=True)
+
+    task = asyncio.create_task(_run())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 @dataclass
@@ -99,10 +114,13 @@ class MLScoringEngine:
         self.behavior = BehaviorModality()
         self.fusion = FusionEngine()
         self._redis: Any | None = None
-        self._failure_counters: dict[str, int] = {
-            "structured": 0,
-            "text": 0,
-            "behavior": 0,
+        # L3 升级判定窗口：每模态记录最近失败时间戳（ADR-013：5min 内 > 阈值次）。
+        # 历史实现为"连续失败计数、成功即清零"，与配置的
+        # modality_failure_window_seconds 完全脱节（低频持续失败永不触发）。
+        self._failure_windows: dict[str, deque[float]] = {
+            "structured": deque(),
+            "text": deque(),
+            "behavior": deque(),
         }
 
     async def load(self, redis_client: Any | None = None) -> None:
@@ -159,15 +177,23 @@ class MLScoringEngine:
         )
         structured_score, text_score, behavior_score = results
 
-        # 记录历史分数（供熔断兜底）
-        await asyncio.gather(
-            self.structured.record_score(tenant_id, structured_score.score),
-            self.text.record_score(tenant_id, text_score.score),
-            self.behavior.record_score(tenant_id, behavior_score.score),
-            return_exceptions=True,
-        )
+        # 记录历史分数（供熔断兜底）：仅记录真实推理结果。
+        # fallback 分数（历史均值/0.5）若也回写滑动窗口，会把后续兜底均值
+        # 稀释成 ~0.5，形成"自参考漂移"，系统性掩盖故障。
+        # 写入为后台任务：不阻塞响应路径（省 3 次 Redis RTT 的关键路径耗时）。
+        record_coros = [
+            modality.record_score(tenant_id, score.score)
+            for modality, score in (
+                (self.structured, structured_score),
+                (self.text, text_score),
+                (self.behavior, behavior_score),
+            )
+            if not score.fallback
+        ]
+        if record_coros:
+            _fire_and_forget(record_coros)
 
-        # 构造 fallback_flags
+        # 构造 fallback_flags + 记录滑动窗口失败时间戳
         fallback_flags: dict[str, str] = {}
         for name, score in (
             ("structured", structured_score),
@@ -177,9 +203,15 @@ class MLScoringEngine:
             if score.fallback:
                 reason = (score.label or "fallback").replace("fallback:", "")
                 fallback_flags[name] = reason
-                self._failure_counters[name] += 1
-            else:
-                self._failure_counters[name] = 0
+                window = self._failure_windows[name]
+                now = time.time()
+                while window and now - window[0] > settings.modality_failure_window_seconds:
+                    window.popleft()
+                window.append(now)
+                if len(window) > settings.modality_failure_threshold * 4:
+                    # 防御性上限：避免极端流量下窗口无限膨胀
+                    for _ in range(len(window) - settings.modality_failure_threshold * 4):
+                        window.popleft()
 
         all_fallback = (
             structured_score.fallback
@@ -282,12 +314,16 @@ class MLScoringEngine:
     def should_trigger_l3_kill_switch(self, modality_name: str) -> bool:
         """ADR-013 L3 模态级 Kill Switch 升级判断。
 
-        5min 内模态连续熔断 > 50 次 → 升级 L3 Kill Switch。
+        配置窗口内（默认 5min）模态熔断次数 >= 阈值 → 升级 L3。
         """
-        return (
-            self._failure_counters.get(modality_name, 0)
-            >= settings.modality_failure_threshold
-        )
+        window = self._failure_windows.get(modality_name)
+        if window is None:
+            return False
+        now = time.time()
+        horizon = settings.modality_failure_window_seconds
+        while window and now - window[0] > horizon:
+            window.popleft()
+        return len(window) >= settings.modality_failure_threshold
 
 
 __all__ = ["MLScoringEngine", "ModalityScores"]

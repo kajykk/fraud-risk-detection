@@ -20,8 +20,9 @@ import {
 } from 'element-plus'
 import { listModels, triggerKillSwitch } from '@/api/model'
 import type { ModelListItem } from '@/types/model'
-import { ModelStatus } from '@/types/enum'
+import { ModelStatus, KillSwitchLevel } from '@/types/enum'
 import { MODEL_STATUS_LABELS, formatDate, formatPercent } from '@/utils/format'
+import { requireApproverId } from '@/utils/permission'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -75,14 +76,19 @@ async function onGlobalKillSwitch() {
       inputValue: '30'
     })
     const duration = Number(durationRes.value) || 30
+    const approverId = requireApproverId(auth.user?.user_id)
+    if (!approverId) {
+      ElMessage.error('用户信息未加载，无法完成审批操作，请刷新页面重试')
+      return
+    }
     const svc = ElLoading.service({ lock: true, text: '触发熔断...' })
     try {
       await triggerKillSwitch({
-        level: 'L1_GLOBAL',
+        level: KillSwitchLevel.L1_GLOBAL,
         scope: '*',
         reason: value,
         duration_minutes: duration,
-        approver_id: auth.user?.user_id || ''
+        approver_id: approverId
       })
       ElMessage.success('已触发全局熔断')
     } finally {

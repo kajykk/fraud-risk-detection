@@ -56,15 +56,20 @@ const consentQuery = reactive<{ user_id: string; purpose: ConsentPurpose | ''; s
 const consentResult = ref<ConsentListResult | null>(null)
 const consentLoading = ref(false)
 
-/** 获取合规官验证 token（fail-closed：无 token 则中止敏感操作） */
-async function requireVerificationToken(): Promise<string | null> {
-  const { value } = await ElMessageBox.prompt('请输入合规验证令牌（由验证流程签发）', '合规验证', {
-    inputType: 'password',
-    confirmButtonText: '确认',
-    cancelButtonText: '取消',
-    inputValidator: (v: string) => (v && v.trim().length > 0 ? true : '请输入验证令牌')
-  })
-  return value ? value.trim() : null
+/** 合规验证 token 弹窗：取消不抛 rejection（返回 { canceled }），
+ *  失败与取消分流，避免未处理 Promise rejection 与静默吞错 */
+async function promptVerificationToken(): Promise<{ canceled: boolean; token?: string }> {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入合规验证令牌（由验证流程签发）', '合规验证', {
+      inputType: 'password',
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+      inputValidator: (v: string) => (v && v.trim().length > 0 ? true : '请输入验证令牌')
+    })
+    return { canceled: false, token: value ? value.trim() : undefined }
+  } catch {
+    return { canceled: true }
+  }
 }
 
 async function fetchConsents() {
@@ -87,33 +92,38 @@ async function fetchConsents() {
 }
 
 async function onWithdraw(c: any) {
+  let reason = ''
   try {
     const { value } = await ElMessageBox.prompt('输入撤回原因', '撤回同意', {
       inputType: 'textarea',
       confirmButtonText: '撤回',
       cancelButtonText: '取消'
     })
-    const svc = ElLoading.service({ lock: true, text: '撤回中...' })
-    try {
-      const verificationToken = await requireVerificationToken()
-      if (!verificationToken) {
-        ElMessage.warning('已取消：未提供验证令牌')
-        return
-      }
-      await withdrawConsent({
-        user_id: c.user_id,
-        verification_token: verificationToken,
-        consent_id: c.consent_id,
-        withdrawal_reason: value ? 'OTHER' : undefined,
-        effective_immediately: true
-      })
-      ElMessage.success('已撤回')
-      await fetchConsents()
-    } finally {
-      svc.close()
-    }
+    reason = value?.trim() || ''
   } catch {
-    /* 用户取消 */
+    return // 用户取消原因输入：直接退出，不视为错误
+  }
+  const verification = await promptVerificationToken()
+  if (verification.canceled || !verification.token) {
+    ElMessage.warning('已取消：未提供验证令牌')
+    return
+  }
+  const svc = ElLoading.service({ lock: true, text: '撤回中...' })
+  try {
+    await withdrawConsent({
+      user_id: c.user_id,
+      verification_token: verification.token,
+      consent_id: c.consent_id,
+      // 撤回原因原文透传留痕（后端原文持久化，PIPL §16）
+      withdrawal_reason: reason || undefined,
+      effective_immediately: true
+    })
+    ElMessage.success('已撤回')
+    await fetchConsents()
+  } catch {
+    // API 失败：错误提示由 axios 拦截器统一处理；不再被当作"用户取消"静默吞掉
+  } finally {
+    svc.close()
   }
 }
 
@@ -139,16 +149,16 @@ async function submitExport() {
     ElMessage.warning('请输入用户 ID')
     return
   }
+  const verification = await promptVerificationToken()
+  if (verification.canceled || !verification.token) {
+    ElMessage.warning('已取消：未提供验证令牌')
+    return
+  }
   const svc = ElLoading.service({ lock: true, text: '提交导出申请...' })
   try {
-    const verificationToken = await requireVerificationToken()
-    if (!verificationToken) {
-      ElMessage.warning('已取消：未提供验证令牌')
-      return
-    }
     exportTask.value = await requestDataExport({
       user_id: exportForm.user_id,
-      verification_token: verificationToken,
+      verification_token: verification.token,
       scope: exportForm.scope,
       format: exportForm.format,
       start_date: exportForm.start_date || undefined,
@@ -195,16 +205,16 @@ async function submitDeletion() {
     ElMessage.warning('请输入用户 ID')
     return
   }
+  const verification = await promptVerificationToken()
+  if (verification.canceled || !verification.token) {
+    ElMessage.warning('已取消：未提供验证令牌')
+    return
+  }
   const svc = ElLoading.service({ lock: true, text: '提交删除申请...' })
   try {
-    const verificationToken = await requireVerificationToken()
-    if (!verificationToken) {
-      ElMessage.warning('已取消：未提供验证令牌')
-      return
-    }
     deletionTask.value = await requestDeletion({
       user_id: deleteForm.user_id,
-      verification_token: verificationToken,
+      verification_token: verification.token,
       scope: deleteForm.scope.split(',').map((s) => s.trim()).filter(Boolean),
       reason: deleteForm.reason,
       retain_for_aml: deleteForm.retain_for_aml,
@@ -244,17 +254,17 @@ async function submitRectification() {
     ElMessage.warning('请填写用户 ID 与字段')
     return
   }
+  const verification = await promptVerificationToken()
+  if (verification.canceled || !verification.token) {
+    ElMessage.warning('已取消：未提供验证令牌')
+    return
+  }
   rectifyLoading.value = true
   const svc = ElLoading.service({ lock: true, text: '提交更正申请...' })
   try {
-    const verificationToken = await requireVerificationToken()
-    if (!verificationToken) {
-      ElMessage.warning('已取消：未提供验证令牌')
-      return
-    }
     await requestRectification({
       user_id: rectifyForm.user_id,
-      verification_token: verificationToken,
+      verification_token: verification.token,
       reason: 'USER_REQUEST',
       corrections: [
         {

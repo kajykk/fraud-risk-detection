@@ -6,3 +6,10 @@
         entry: E:/code/.tools/gitleaks.exe protect --staged --redact -v
         language: system
         pass_filenames: false
+      - id: mypy-backend
+        name: mypy (backend strict)
+        entry: python -m mypy --ignore-missing-imports --explicit-package-bases
+        language: system
+        pass_filenames: false
+        files: ^backend/app/.*\.py$
+        args: ["backend/app"]

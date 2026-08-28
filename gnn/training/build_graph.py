@@ -64,12 +64,12 @@ class GraphBuilder:
         edges = self._fetch_edges(tenant_id)
         return self._to_snapshot(nodes, edges)
 
-    def _fetch_nodes(self, tenant_id: str) -> list[dict]:
+    def _fetch_nodes(self, tenant_id: str) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database()) as sess:
             result = sess.run(NODE_QUERY, tenant_id=tenant_id)
             return [dict(record) for record in result]
 
-    def _fetch_edges(self, tenant_id: str) -> list[dict]:
+    def _fetch_edges(self, tenant_id: str) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database()) as sess:
             result = sess.run(EDGE_QUERY, tenant_id=tenant_id)
             return [dict(record) for record in result]
@@ -77,11 +77,13 @@ class GraphBuilder:
     def _database(self) -> str:
         from ..config import settings
 
-        return settings.neo4j.database
+        return str(settings.neo4j.database)
 
-    def _to_snapshot(self, nodes: list[dict], edges: list[dict]) -> GraphSnapshot:
-        import numpy as np  # type: ignore
-        import torch  # type: ignore
+    def _to_snapshot(
+        self, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+    ) -> GraphSnapshot:
+        import numpy as np
+        import torch
 
         if not nodes:
             empty = torch.zeros((0, 64), dtype=torch.float32)

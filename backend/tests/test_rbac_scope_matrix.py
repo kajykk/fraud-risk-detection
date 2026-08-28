@@ -37,6 +37,15 @@ ENDPOINT_SCOPE_MATRIX: list[tuple[str, str, str, set[str]]] = [
     ("GET", "/api/v1/gnn/community/{community_id}", "graph:read", {"RISK_ANALYST", "RISK_MANAGER"}),
     ("POST", "/api/v1/gnn/embedding", "graph:write", {"RISK_ANALYST", "RISK_MANAGER"}),
     ("POST", "/api/v1/gnn/community-detection", "graph:write", {"RISK_ANALYST", "RISK_MANAGER"}),
+    # ---- Webhook（webhook:* 读写分离：读=配置可见性，写=注册/变更/投递）----
+    ("GET", "/api/v1/webhooks", "webhook:read", {"MERCHANT_ADMIN", "AUDITOR"}),
+    ("GET", "/api/v1/webhooks/{webhook_id}", "webhook:read", {"MERCHANT_ADMIN", "AUDITOR"}),
+    (
+        "GET",
+        "/api/v1/webhooks/{webhook_id}/deliveries",
+        "webhook:read",
+        {"MERCHANT_ADMIN", "AUDITOR"},
+    ),
 ]
 
 ALL_ROLES = [

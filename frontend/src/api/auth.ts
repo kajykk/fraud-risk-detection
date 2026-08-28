@@ -10,9 +10,9 @@ export function login(payload: LoginRequest) {
   return post<TokenResponse>('/auth/login', payload)
 }
 
-/** 刷新 token */
-export function refreshToken(refreshToken: string) {
-  return post<TokenResponse>('/auth/refresh', { refresh_token: refreshToken })
+/** 刷新 token（标准路径依赖 HttpOnly Cookie，body 参数仅为 API 直连兼容） */
+export function refreshToken(refreshToken?: string) {
+  return post<TokenResponse>('/auth/refresh', refreshToken ? { refresh_token: refreshToken } : {})
 }
 
 /** 退出登录 */
@@ -23,6 +23,11 @@ export function logout() {
 /** 获取当前用户 profile */
 export function fetchProfile() {
   return get<UserInfo>('/auth/profile')
+}
+
+/** 签发一次性 WebSocket 连接票据（30s 有效，单次消费） */
+export function createWsTicket() {
+  return post<{ ticket: string; expires_in: number }>('/auth/ws-ticket')
 }
 
 /** OAuth2 客户端凭证模式获取 token（D05 §3.1） */

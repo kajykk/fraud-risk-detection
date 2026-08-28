@@ -54,11 +54,19 @@ async function handleLogin() {
       trust_device: form.trust_device
     })
     ElMessage.success('登录成功')
-    const redirect = (route.query.redirect as string) || '/dashboard'
+    const redirect = sanitizeRedirect(route.query.redirect as string | undefined)
     router.push(redirect)
   } catch {
     // 错误提示已在 axios 拦截器统一处理
   }
+}
+
+/** 登录后跳转目标校验：仅允许站内绝对路径，拒绝外链/协议相对地址（开放重定向防护） */
+function sanitizeRedirect(raw: string | undefined): string {
+  if (raw && raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('\\')) {
+    return raw
+  }
+  return '/dashboard'
 }
 </script>
 

@@ -4,17 +4,23 @@
 - DSL 语法：比较 / && / || / 括号优先级 / 括号不匹配
 - 求值语义：数字比较、字符串比较、缺失字段、类型不匹配
 - 非法语法：_DslSyntaxError
+- 灰度分流：CANARY 规则按确定性分桶放量（0% 永不命中 / 100% 全量命中）
 """
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.services.rule_engine import (
+    CompiledRule,
+    _canary_bucket,
     _CmpExpr,
     _DslSyntaxError,
     _parse_expression,
     _tokenize,
+    rule_engine,
 )
 
 
@@ -118,3 +124,73 @@ class TestExprTree:
         expr = _CmpExpr("amount", ">", 100)
         assert expr.evaluate({"amount": 101}) is True
         assert expr.evaluate({"amount": 100}) is False
+
+
+# --------------------------------------------------------------------------- #
+# 灰度（CANARY）分流
+# --------------------------------------------------------------------------- #
+class TestCanaryBucket:
+    def test_deterministic(self) -> None:
+        """同一 (rule, tx) 恒落同桶。"""
+        assert _canary_bucket("R0001", "TX1") == _canary_bucket("R0001", "TX1")
+
+    def test_range_and_spread(self) -> None:
+        for i in range(200):
+            bucket = _canary_bucket("R0001", f"TX{i}")
+            assert 0 <= bucket <= 99
+
+    def test_varies_by_tx(self) -> None:
+        buckets = {_canary_bucket("R0001", f"TX{i}") for i in range(200)}
+        # 200 笔交易应覆盖较宽的桶范围（非恒定单桶）
+        assert len(buckets) > 20
+
+
+class TestCanaryEvaluation:
+    def _canary_rule(self, pct: int) -> CompiledRule:
+        return CompiledRule(
+            "R9001",
+            "canary_big_amount",
+            "REVIEW",
+            "WARN",
+            50,
+            _parse_expression("amount > 100"),
+            is_canary=True,
+            canary_percent=pct,
+        )
+
+    async def _eval_with_rules(self, rules: list[CompiledRule], tx: dict):
+        async def fake_load(tenant_id: str) -> list[CompiledRule]:
+            return rules
+
+        original = rule_engine._load_compiled
+        rule_engine._load_compiled = fake_load
+        try:
+            return await rule_engine.evaluate(tx, "tenant-test")
+        finally:
+            rule_engine._load_compiled = original
+
+    def test_zero_percent_never_fires(self) -> None:
+        result = asyncio.run(
+            self._eval_with_rules([self._canary_rule(0)], {"amount": 999_999})
+        )
+        assert result.hit_rules == []
+        assert result.action == "ALLOW"
+
+    def test_full_percent_fires(self) -> None:
+        result = asyncio.run(
+            self._eval_with_rules([self._canary_rule(100)], {"amount": 999_999})
+        )
+        assert len(result.hit_rules) == 1
+        assert result.action == "REVIEW"
+
+    def test_active_rule_ignores_canary_gate(self) -> None:
+        rule = CompiledRule(
+            "R9002",
+            "active_big_amount",
+            "REVIEW",
+            "WARN",
+            50,
+            _parse_expression("amount > 100"),
+        )
+        result = asyncio.run(self._eval_with_rules([rule], {"amount": 999_999}))
+        assert result.action == "REVIEW"

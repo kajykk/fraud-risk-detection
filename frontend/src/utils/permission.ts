@@ -40,3 +40,17 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 export function getRoleLabel(role: UserRole): string {
   return ROLE_LABELS[role] || role
 }
+
+/**
+ * 获取当前操作人 ID（四眼审计必填）。
+ *
+ * 治理类操作（模型晋升/回滚、Kill Switch、规则灰度）的 approver_id 是合规硬要求：
+ * 用户信息未加载时必须阻断操作并提示，绝不允许静默上送空字符串。
+ * 返回 null 表示应终止本次操作。
+ */
+export function requireApproverId(userId: string | undefined | null): string | null {
+  if (!userId || !userId.trim()) {
+    return null
+  }
+  return userId
+}

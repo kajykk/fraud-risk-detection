@@ -95,10 +95,16 @@ class Settings:
     server: ServerConfig = field(default_factory=ServerConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
     structured: ModalityConfig = field(
-        default_factory=lambda: ModalityConfig(name="structured")
+        default_factory=lambda: ModalityConfig(
+            name="structured", timeout_ms=20.0  # D03 §4.1 分模态预算
+        )
     )
-    text: ModalityConfig = field(default_factory=lambda: ModalityConfig(name="text"))
-    behavior: ModalityConfig = field(default_factory=lambda: ModalityConfig(name="behavior"))
+    text: ModalityConfig = field(
+        default_factory=lambda: ModalityConfig(name="text", timeout_ms=30.0)
+    )
+    behavior: ModalityConfig = field(
+        default_factory=lambda: ModalityConfig(name="behavior", timeout_ms=25.0)
+    )
     fusion: FusionConfig = field(default_factory=FusionConfig)
     models: ModelRegistryConfig = field(default_factory=ModelRegistryConfig)
     # 模态连续熔断升级 Kill Switch 阈值（ADR-013 L3）

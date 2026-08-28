@@ -34,6 +34,9 @@ def compute_psi(
 ) -> float:
     """计算 PSI（Population Stability Index）。
 
+    numpy 向量化实现（searchsorted 分桶），语义与原逐样本循环一致：
+    落在 [bins[0], bins[-1]] 之外的值不计数，等于最大边界值归最后一桶。
+
     Args:
         current_dist: 当前样本值列表
         reference_dist: 基线样本值列表
@@ -42,6 +45,8 @@ def compute_psi(
     """
     if not current_dist or not reference_dist:
         return 0.0
+    import numpy as np
+
     sorted_ref = sorted(reference_dist)
     # 等频分桶：n_bins+1 个边界（含 min/max），对一般分布有效
     quantiles = [
@@ -52,20 +57,18 @@ def compute_psi(
     if len(bins) < 2:
         # 参考分布退化为常数（零方差），无法分桶 → 视为无漂移
         return 0.0
+    edges = np.array(bins, dtype=np.float64)
 
     def histogram(values: list[float]) -> list[float]:
-        counts = [0.0] * (len(bins) - 1)
-        for v in values:
-            for i in range(len(bins) - 1):
-                if bins[i] <= v < bins[i + 1]:
-                    counts[i] += 1.0
-                    break
-            else:
-                # 等于最大边界值（bins[-1]）→ 归入最后一个桶
-                if v == bins[-1]:
-                    counts[-1] += 1.0
-        total = sum(counts) or 1.0
-        return [c / total for c in counts]
+        v = np.asarray(values, dtype=np.float64)
+        # 区间外（v < bins[0] 或 v > bins[-1]）与原实现一致：不计入任何桶
+        valid = (v >= edges[0]) & (v <= edges[-1])
+        idx = np.searchsorted(edges, v[valid], side="right") - 1
+        # 等于最大边界值 → 归入最后一个桶
+        idx[idx == len(edges) - 1] = len(edges) - 2
+        counts = np.bincount(idx, minlength=len(edges) - 1).astype(np.float64)
+        total = float(counts.sum()) or 1.0
+        return [float(x / total) for x in counts]
 
     p_ref = histogram(reference_dist)
     p_cur = histogram(current_dist)

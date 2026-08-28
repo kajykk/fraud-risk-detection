@@ -231,12 +231,16 @@ services:
     container_name: frd-frontend
     restart: unless-stopped
     environment:
-      VITE_API_BASE_URL: http://localhost:8002/api/v1
+      # API 走相对路径 /api/v1 由 vite dev server 代理；
+      # 容器内代理目标指向 backend 服务名（宿主机本地开发默认 localhost:8002）
+      VITE_PROXY_TARGET: http://backend:8000
     ports:
       - "5174:5173"
     volumes:
       - ./frontend:/app
     command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      - backend
     networks:
       - frd-net
 

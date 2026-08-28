@@ -1,4 +1,4 @@
-"""交易与评分模型（D04 V1.1 §3.2）。
+﻿"""交易与评分模型（D04 V1.1 §3.2）。
 
 表：transactions / scores / shap_explanations
 """
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base, PKMixin, TenantMixin
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 

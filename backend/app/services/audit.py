@@ -1,10 +1,12 @@
 """审计日志服务：哈希链落库（D04 §3.7）。
 
 设计：
-- sequence_no 基于 tenant_id 维度递增（Redis INCR audit_seq:{tenant_id}，
-  Redis 不可用时降级为 DB 内 MAX(sequence_no)+1）
+- sequence_no 基于 tenant_id 维度递增（Redis INCR 加速提示，
+  以 DB MAX(sequence_no) 为权威校准，防 Redis 漂移导致唯一冲突）
+- 并发安全：写入事务内取租户级 pg_advisory_xact_lock 串行化，
+  防止并发写导致的哈希链分叉
 - 哈希链：current_hash = sha256(prev_hash || seq || canonical_json(payload))
-- prev_hash 取该租户最新一条审计的 current_hash；无记录用 GENESIS_HASH
+- prev_hash 取该租户 sequence_no 最大一条的 current_hash；无记录用 GENESIS_HASH
 - 所有失败均吞掉并记日志，绝不阻塞业务主路径
 
 配合 middleware/audit.py 使用；audit_logs 表受 RLS 隔离，写入走
@@ -20,7 +22,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.core.logging import get_logger
 from app.db.session import session_scope
@@ -111,21 +113,34 @@ async def record_audit_event(
 
     try:
         async with session_scope(tenant_id) as session:
-            if seq is None:
-                prev = await session.execute(
+            # 租户级事务咨询锁：串行化同租户并发审计写入。
+            # 否则两个请求会读到同一 prev_hash/相邻 sequence，哈希链分叉，
+            # 且与 MAX+1 回退路径相撞时触发唯一约束冲突导致整条审计丢失。
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:tenant_key))"),
+                {"tenant_key": tenant_id},
+            )
+
+            prev_max = (
+                await session.execute(
                     select(func.max(AuditLog.sequence_no)).where(
                         AuditLog.tenant_id == uuid.UUID(tenant_id)
                     )
                 )
-                seq = (prev.scalar() or 0) + 1
+            ).scalar() or 0
 
-            if seq == 1:
+            # 序列号以 DB 实际值为准（Redis INCR 仅为加速提示；
+            # Redis 清空/漂移后 <=prev_max 时回退 MAX+1，防唯一约束冲突）
+            if seq is None or seq <= prev_max:
+                seq = prev_max + 1
+
+            if prev_max == 0:
                 prev_hash = GENESIS_HASH
             else:
                 last = await session.execute(
                     select(AuditLog)
                     .where(AuditLog.tenant_id == uuid.UUID(tenant_id))
-                    .order_by(AuditLog.created_at.desc(), AuditLog.sequence_no.desc())
+                    .order_by(AuditLog.sequence_no.desc())
                     .limit(1)
                 )
                 last_row = last.scalar_one_or_none()

@@ -47,7 +47,6 @@ async def main():
             json={
                 "username": SEED_USER,
                 "password": SEED_PASSWORD,
-                "scopes": ["transaction:score", "transaction:read"],
             },
         )
         login_resp.raise_for_status()

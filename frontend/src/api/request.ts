@@ -6,12 +6,60 @@ import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosR
 import { ElMessage } from 'element-plus'
 import type { ApiResponse } from '@/types/api'
 
-const STORAGE_KEY_TOKEN = 'frd_access_token'
-const STORAGE_KEY_REFRESH_TOKEN = 'frd_refresh_token'
+// ---------------------------------------------------------------------------
+// Access Token 内存态管理（XSS 不可持久化窃取）
+//
+// - token 仅存于模块级变量，不落 localStorage/sessionStorage/非 HttpOnly Cookie；
+// - 刷新凭证为 HttpOnly Cookie（同源自动携带）；
+// - 跨标签页：BroadcastChannel 广播新 AT；刷新经 Web Locks 单飞串行，
+//   锁内 15s 新鲜度短路避免旋转竞态（jti 重放保护）。
+// ---------------------------------------------------------------------------
+let accessToken: string | null = null
+let lastRenewAt = 0
 
-/** 读取本地 token（避免与 store 循环依赖） */
-function getStoredToken(): string | null {
-  return localStorage.getItem(STORAGE_KEY_TOKEN)
+const LEGACY_STORAGE_KEY_TOKEN = 'frd_access_token'
+const LEGACY_STORAGE_KEY_REFRESH_TOKEN = 'frd_refresh_token'
+
+const authChannel: BroadcastChannel | null =
+  typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('frd_auth') : null
+
+if (authChannel) {
+  authChannel.onmessage = (ev: MessageEvent) => {
+    const msg = ev.data as { type?: string; token?: string }
+    if (msg?.type === 'AT' && msg.token) {
+      // 其他标签页完成旋转后广播的新 AT：直接采纳（不回广播）
+      accessToken = msg.token
+      lastRenewAt = Date.now()
+    } else if (msg?.type === 'LOGOUT') {
+      accessToken = null
+    }
+  }
+}
+
+/** 读取当前内存态 access token */
+export function getAccessToken(): string | null {
+  return accessToken
+}
+
+/** 写入 access token（broadcast=false 用于采纳他标签页广播，避免回环） */
+export function setAccessToken(token: string | null, broadcast = true): void {
+  accessToken = token
+  if (token) {
+    lastRenewAt = Date.now()
+    if (broadcast && authChannel) {
+      authChannel.postMessage({ type: 'AT', token })
+    }
+  }
+}
+
+/** 一次性清理历史版本遗留的本地 token 存储（迁移收口） */
+export function purgeLegacyTokenStorage(): void {
+  localStorage.removeItem(LEGACY_STORAGE_KEY_TOKEN)
+  localStorage.removeItem(LEGACY_STORAGE_KEY_REFRESH_TOKEN)
+}
+
+function broadcastLogout(): void {
+  authChannel?.postMessage({ type: 'LOGOUT' })
 }
 
 /** 生成 X-Request-ID（UUID v4） */
@@ -35,39 +83,48 @@ const request: AxiosInstance = axios.create({
   }
 })
 
-// 401 自动刷新：并发 401 共享同一个刷新请求；避免与 auth API 循环依赖
+// 401 自动刷新：并发/跨标签页共享同一次旋转（Web Locks 单飞 + 新鲜度短路）
 let refreshPromise: Promise<string | null> | null = null
 
 function isAuthPath(url?: string): boolean {
   return !!url && /\/auth\/(login|refresh|token)/.test(url)
 }
 
-async function tryRefreshToken(): Promise<string | null> {
-  const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH_TOKEN)
-  if (!refreshToken) return null
-  try {
-    // 用裸 axios 发送，避免经过本拦截器（防递归）；仍带 X-Request-Id 供后端链路追踪
-    const res = await axios.post<ApiResponse<{ access_token: string; refresh_token?: string }>>(
-      `${request.defaults.baseURL}/auth/refresh`,
-      { refresh_token: refreshToken },
-      { headers: { 'X-Request-Id': genRequestId() } }
-    )
-    const data = res.data?.data
-    if (!data?.access_token) return null
-    localStorage.setItem(STORAGE_KEY_TOKEN, data.access_token)
-    if (data.refresh_token) {
-      localStorage.setItem(STORAGE_KEY_REFRESH_TOKEN, data.refresh_token)
+async function refreshAccessToken(): Promise<string | null> {
+  const attempt = async (): Promise<string | null> => {
+    // 锁内新鲜度检查：他标签页刚完成旋转时直接复用广播来的 AT，
+    // 避免二次旋转触发后端 jti 重放判定
+    if (accessToken && Date.now() - lastRenewAt < 15_000) {
+      return accessToken
     }
-    return data.access_token
-  } catch {
-    return null
+    try {
+      // 裸 axios 发送避免经过本拦截器（防递归）；RT 在 HttpOnly Cookie 中自动携带
+      const res = await axios.post<ApiResponse<{ access_token: string; refresh_token?: string }>>(
+        `${request.defaults.baseURL}/auth/refresh`,
+        {},
+        { headers: { 'X-Request-Id': genRequestId() } }
+      )
+      const data = res.data?.data
+      if (!data?.access_token) return null
+      setAccessToken(data.access_token)
+      return data.access_token
+    } catch {
+      return null
+    }
   }
+
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
+  if (locks?.request) {
+    return locks.request('frd-refresh', attempt)
+  }
+  return attempt()
 }
 
-/** 清除 token 并跳转登录（避免在拦截器内 import store 造成循环依赖） */
+/** 清除本地会话并跳转登录（拦截器内使用，避免 import store 循环依赖） */
 function redirectToLogin() {
-  localStorage.removeItem(STORAGE_KEY_TOKEN)
-  localStorage.removeItem(STORAGE_KEY_REFRESH_TOKEN)
+  accessToken = null
+  broadcastLogout()
+  purgeLegacyTokenStorage()
   const current = window.location.pathname + window.location.search
   if (!window.location.pathname.startsWith('/login')) {
     window.location.href = `/login?redirect=${encodeURIComponent(current)}`
@@ -77,9 +134,8 @@ function redirectToLogin() {
 // 请求拦截器：注入 Authorization Bearer token + X-Request-ID
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    const token = getStoredToken()
-    if (token && !config.headers.Authorization) {
-      config.headers.Authorization = `Bearer ${token}`
+    if (accessToken && !config.headers.Authorization) {
+      config.headers.Authorization = `Bearer ${accessToken}`
     }
     if (!config.headers['X-Request-Id']) {
       config.headers['X-Request-Id'] = genRequestId()
@@ -106,8 +162,8 @@ request.interceptors.response.use(
     const config = error?.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
 
     if (status === 401 && config && !config._retried && !isAuthPath(config.url)) {
-      // 尝试自动刷新 token 并重放请求一次
-      refreshPromise = refreshPromise ?? tryRefreshToken()
+      // 尝试自动刷新（跨标签页单飞）并重放请求一次
+      refreshPromise = refreshPromise ?? refreshAccessToken()
       return refreshPromise.finally(() => {
         refreshPromise = null
       }).then((token) => {
@@ -182,5 +238,5 @@ export async function del<T = unknown>(url: string, config?: AxiosRequestConfig)
   return res.data.data
 }
 
-export { STORAGE_KEY_TOKEN, STORAGE_KEY_REFRESH_TOKEN }
+export { broadcastLogout }
 export default request

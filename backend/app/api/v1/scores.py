@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -31,7 +32,7 @@ from app.services.shap_provider import generate_shap_factors
 router = APIRouter()
 
 
-def _tx_to_dict(tx: Transaction | None) -> dict:
+def _tx_to_dict(tx: Transaction | None) -> dict[str, Any]:
     """交易记录 → SHAP 输入 dict（与 transactions.py 保持一致）。"""
     return {
         "amount": tx.amount if tx else 0,
@@ -43,33 +44,12 @@ def _tx_to_dict(tx: Transaction | None) -> dict:
     }
 
 
-async def _load_score_with_tx(
-    decision_id: str, tenant_id: str
-) -> tuple[Score, Transaction | None]:
-    """加载 score + 关联 transaction（RLS 隔离 + 显式 tenant_id 过滤）。"""
-    async with session_scope(tenant_id) as session:
-        score_result = await session.execute(
-            select(Score).where(
-                Score.id == uuid.UUID(decision_id),
-                Score.tenant_id == uuid.UUID(tenant_id),
-            )
-        )
-        score = score_result.scalar_one_or_none()
-        if score is None:
-            raise NotFoundError(f"score not found: {decision_id}")
-        tx_result = await session.execute(
-            select(Transaction).where(Transaction.id == score.transaction_id)
-        )
-        tx = tx_result.scalar_one_or_none()
-    return score, tx
-
-
-@router.get("/{decision_id}", response_model=ApiResponse[dict])
+@router.get("/{decision_id}", response_model=ApiResponse[dict[str, Any]])
 async def get_score(
     decision_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:read")),
-) -> ApiResponse[dict]:
+    _user: dict[str, Any] = Depends(require_scope("transaction:read")),
+) -> ApiResponse[dict[str, Any]]:
     """查询评分详情。"""
     async with session_scope(tenant_id) as session:
         result = await session.execute(
@@ -96,16 +76,29 @@ async def trigger_shap(
     decision_id: str,
     req: ShapTriggerRequest,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:read")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:read")),
 ) -> ApiResponse[ShapTriggerResponse]:
-    """触发 SHAP 计算 — 同步模式（mock provider，无异步队列依赖）。"""
-    score, tx = await _load_score_with_tx(decision_id, tenant_id)
+    """触发 SHAP 计算 — 同步模式（mock provider，无异步队列依赖）。
 
-    # 生成 SHAP 因子
-    shap_data = generate_shap_factors(_tx_to_dict(tx), float(score.risk_score))
-
-    # 写入 shap_explanations 表
+    加载与写入合并为单一事务（消除双 session 往返）。
+    """
     async with session_scope(tenant_id) as session:
+        score_result = await session.execute(
+            select(Score).where(
+                Score.id == uuid.UUID(decision_id),
+                Score.tenant_id == uuid.UUID(tenant_id),
+            )
+        )
+        score = score_result.scalar_one_or_none()
+        if score is None:
+            raise NotFoundError(f"score not found: {decision_id}")
+        tx_result = await session.execute(
+            select(Transaction).where(Transaction.id == score.transaction_id)
+        )
+        tx = tx_result.scalar_one_or_none()
+
+        # 生成 SHAP 因子并落库
+        shap_data = generate_shap_factors(_tx_to_dict(tx), float(score.risk_score))
         shap_record = ShapExplanation(
             tenant_id=score.tenant_id,
             score_id=score.id,
@@ -131,15 +124,38 @@ async def trigger_shap(
 @router.get("/{decision_id}/shap/status", response_model=ApiResponse[ShapStatus])
 async def shap_status(
     decision_id: str,
-    _user: dict = Depends(require_scope("transaction:read")),
+    tenant_id: str = Depends(get_tenant_id),
+    _user: dict[str, Any] = Depends(require_scope("transaction:read")),
 ) -> ApiResponse[ShapStatus]:
-    """查询 SHAP 计算状态 — 同步模式直接返回 COMPLETED。"""
+    """查询 SHAP 计算状态（按 shap_explanations 真实记录与有效期判定）。
+
+    - 无记录 → RUNNING（未触发/计算中）；
+    - 有记录且未过期 → READY；
+    - 有记录但已过 expires_at → EXPIRED（调用方应重新触发）。
+    """
+    async with session_scope(tenant_id) as session:
+        result = await session.execute(
+            select(ShapExplanation.expires_at).where(
+                ShapExplanation.score_id == uuid.UUID(decision_id),
+                ShapExplanation.tenant_id == uuid.UUID(tenant_id),
+            )
+        )
+        expires_at = result.scalar_one_or_none()
+
+    now = datetime.now(UTC)
+    if expires_at is None:
+        status = ShapStatusEnum.RUNNING
+    elif expires_at < now:
+        status = ShapStatusEnum.EXPIRED
+    else:
+        status = ShapStatusEnum.READY
+
     return ApiResponse(
         data=ShapStatus(
             shap_task_id=f"shap_task_{decision_id}",
             decision_id=decision_id,
-            status=ShapStatusEnum.COMPLETED,
-            progress=1.0,
+            status=status,
+            progress=1.0 if status == ShapStatusEnum.READY else 0.0,
             result_url=f"/api/v1/scores/{decision_id}/shap/result",
         )
     )
@@ -149,7 +165,7 @@ async def shap_status(
 async def shap_result(
     decision_id: str,
     tenant_id: str = Depends(get_tenant_id),
-    _user: dict = Depends(require_scope("transaction:read")),
+    _user: dict[str, Any] = Depends(require_scope("transaction:read")),
 ) -> ApiResponse[ShapResult]:
     """获取 SHAP 计算结果 — 从 shap_explanations 表读取。"""
     async with session_scope(tenant_id) as session:
@@ -187,7 +203,7 @@ async def shap_result(
                     base_value=shap_data["base_value"],
                     prediction=shap_data["prediction"],
                     features=shap_data["features"],
-                    completed_at=datetime.now(UTC).isoformat(),
+                    completed_at=datetime.now(UTC),
                 )
             )
 
@@ -199,6 +215,6 @@ async def shap_result(
                 base_value=float(shap_record.base_value),
                 prediction=float(shap_record.output_value),
                 features=shap_record.factors,
-                completed_at=shap_record.computed_at.isoformat() if shap_record.computed_at else datetime.now(UTC).isoformat(),
+                completed_at=shap_record.computed_at or datetime.now(UTC),
             )
         )

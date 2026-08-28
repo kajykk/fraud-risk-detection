@@ -1,4 +1,4 @@
-"""RuleEngine（D03 §4.2）。
+﻿"""RuleEngine（D03 §4.2）。
 
 - 安全 DSL 解析（tokenizer + 递归下降，不支持 eval）
 - 规则版本加载（Redis 缓存，按 tenant_id 分片）
@@ -22,10 +22,11 @@ import contextlib
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.exceptions import RuleDSLInvalidError
 from app.core.logging import get_logger
@@ -71,7 +72,7 @@ class _Expr:
 
 
 class _CmpExpr(_Expr):
-    OPS = {
+    OPS: dict[str, Callable[[Any, Any], bool]] = {
         "==": lambda a, b: a == b,
         "!=": lambda a, b: a != b,
         ">": lambda a, b: a > b,
@@ -109,7 +110,7 @@ class _CmpExpr(_Expr):
         if lv is None or rv is None:
             return False
         try:
-            return self.OPS[self.op](lv, rv)
+            return bool(self.OPS[self.op](lv, rv))
         except TypeError:
             # 类型不匹配（如 int vs str）视为不命中
             return False
@@ -237,9 +238,22 @@ def validate_expression(dsl: str) -> None:
 
 
 class CompiledRule:
-    """编译后的规则（DSL 解析结果缓存）。"""
+    """编译后的规则（DSL 解析结果缓存）。
 
-    __slots__ = ("rule_id", "rule_name", "action", "severity", "priority", "expr")
+    is_canary=True 的规则为灰度版本：仅对确定性分桶命中的流量生效
+    （canary_percent 为放量百分比 0-100）。
+    """
+
+    __slots__ = (
+        "rule_id",
+        "rule_name",
+        "action",
+        "severity",
+        "priority",
+        "expr",
+        "is_canary",
+        "canary_percent",
+    )
 
     def __init__(
         self,
@@ -249,6 +263,9 @@ class CompiledRule:
         severity: str,
         priority: int,
         expr: _Expr,
+        *,
+        is_canary: bool = False,
+        canary_percent: int = 100,
     ) -> None:
         self.rule_id = rule_id
         self.rule_name = rule_name
@@ -256,6 +273,16 @@ class CompiledRule:
         self.severity = severity
         self.priority = priority
         self.expr = expr
+        self.is_canary = is_canary
+        self.canary_percent = canary_percent
+
+
+def _canary_bucket(rule_id: str, external_tx_id: str) -> int:
+    """确定性灰度分桶（0-99）：同一交易对同一规则恒落同桶，保证体验一致。"""
+    import hashlib
+
+    digest = hashlib.md5(f"{rule_id}:{external_tx_id}".encode()).hexdigest()
+    return int(digest[:8], 16) % 100
 
 
 @dataclass
@@ -294,13 +321,19 @@ class RuleEngine:
         try:
             rules = await self._load_compiled(tenant_id)
         except Exception as exc:
+            # fail-closed：规则引擎故障时降级为人工审核，绝不静默放行
             logger.warning("rule_engine_load_failed", tenant_id=tenant_id, error=str(exc))
-            return RuleResult(hit_rules=[], action="ALLOW", latency_ms=1, fallback_used=True)
+            return RuleResult(hit_rules=[], action="REVIEW", latency_ms=1, fallback_used=True)
 
         hit_rules: list[RuleHit] = []
         action = "ALLOW"
         for rule in rules:
             try:
+                # 灰度规则：确定性分桶放量，未命中桶的交易跳过该规则
+                if rule.is_canary:
+                    tx_key = str(transaction.get("external_tx_id") or "")
+                    if _canary_bucket(rule.rule_id, tx_key) >= rule.canary_percent:
+                        continue
                 if rule.expr.evaluate(transaction):
                     severity = rule.severity or "WARN"
                     hit_rules.append(
@@ -337,7 +370,7 @@ class RuleEngine:
         return RuleResult(hit_rules=hit_rules, action=action, latency_ms=latency_ms)
 
     async def _load_compiled(self, tenant_id: str) -> list[CompiledRule]:
-        """加载 ACTIVE 规则（Redis 缓存 → DB 兜底），编译并缓存。"""
+        """加载生效规则（ACTIVE 全量 + CANARY 灰度；Redis 缓存 → DB 兜底），编译并缓存。"""
         cache_key = f"rules:{tenant_id}:active"
         cache_ts, cached = self._compiled_cache.get(cache_key, (0.0, []))
         if time.time() - cache_ts < _RULES_CACHE_TTL:
@@ -366,6 +399,8 @@ class RuleEngine:
                     severity=rule.get("severity", "WARN"),
                     priority=rule.get("priority", 50),
                     expr=expr,
+                    is_canary=rule.get("status") == "CANARY",
+                    canary_percent=int(rule.get("canary_percent", 100)),
                 )
             )
         compiled.sort(key=lambda r: r.priority, reverse=False)
@@ -373,9 +408,11 @@ class RuleEngine:
 
         try:
             redis = get_redis()
+            # 与 load_rules 共用同一命名空间，写入完整规则数据（而非仅 rule_id），
+            # 避免同 key 两种形状导致 load_rules 命中后反序列化出字符串列表
             await redis.set(
                 cache_key,
-                json.dumps([r["rule_id"] for r in rules]),
+                json.dumps(rules, ensure_ascii=False),
                 ex=_RULES_CACHE_TTL,
             )
         except Exception as exc:
@@ -383,52 +420,50 @@ class RuleEngine:
         return compiled
 
     async def _load_rules_from_store(self, tenant_id: str) -> list[dict[str, Any]]:
-        """从 DB 加载 ACTIVE 规则（本租户 + 全局 tenant_id IS NULL）。"""
-        from sqlalchemy import func
+        """从 DB 加载生效规则（本租户 + 全局 tenant_id IS NULL）。
 
-        # 取每个 rule 的最新版本（ACTIVE 状态）
-        latest_version = (
-            select(
-                RuleVersion.rule_id,
-                RuleVersion.expression,
-                RuleVersion.status,
-                func.row_number()
-                .over(
-                    partition_by=RuleVersion.rule_id,
-                    order_by=RuleVersion.created_at.desc(),
-                )
-                .label("rn"),
-            )
-            .where(RuleVersion.status == "ACTIVE")
-            .subquery()
-        )
-
+        加载 ACTIVE 与 CANARY 两个状态的最新版本：
+        - ACTIVE：全量生效；
+        - CANARY：灰度版本，evaluate 按确定性分桶（canary_percent）放量。
+        同一规则允许同时存在一条 ACTIVE（旧版全量）+ 一条 CANARY（新版灰度），
+        这是金丝雀发布的预期形态。
+        """
         factory = get_session_factory()
         async with factory() as session:
             await set_tenant_id(session, tenant_id)
             result = await session.execute(
-                select(Rule, latest_version.c.expression)
-                .join(
-                    latest_version,
-                    latest_version.c.rule_id == Rule.id,
+                select(
+                    Rule,
+                    RuleVersion.expression,
+                    RuleVersion.status,
+                    RuleVersion.canary_percent,
                 )
+                .join(RuleVersion, RuleVersion.rule_id == Rule.id)
                 .where(
                     Rule.enabled.is_(True),
-                    (Rule.tenant_id.is_(None)) | (Rule.tenant_id == tenant_id),
+                    RuleVersion.status.in_(["ACTIVE", "CANARY"]),
+                    or_(Rule.tenant_id.is_(None), Rule.tenant_id == tenant_id),
                 )
-                .order_by(Rule.priority)
+                .order_by(Rule.priority, RuleVersion.created_at.desc())
             )
-            return [
-                {
+            # 每条规则的每个状态取最新一条（created_at 倒序首个命中）
+            picked: dict[tuple[str, str], dict[str, Any]] = {}
+            for rule, expression, status, canary_pct in result:
+                key = (str(rule.id), str(status))
+                if key in picked:
+                    continue
+                picked[key] = {
+                    "rule_pk": str(rule.id),
                     "rule_id": rule.rule_id,
                     "name": rule.name,
                     "action": rule.action,
                     "expression": expression,
                     "priority": rule.priority,
                     "severity": "WARN",
+                    "status": str(status),
+                    "canary_percent": int(canary_pct or 0),
                 }
-                for rule, expression in result
-            ]
+            return list(picked.values())
 
     async def load_rules(self, tenant_id: str, version: str | None = None) -> list[dict[str, Any]]:
         """加载规则版本（Redis 缓存优先）。"""
@@ -437,7 +472,8 @@ class RuleEngine:
             key = f"rules:{tenant_id}:active" if not version else f"rules:{tenant_id}:{version}"
             cached = await redis.get(key)
             if cached:
-                return json.loads(cached)
+                data: list[dict[str, Any]] = json.loads(cached)
+                return data
         except Exception as exc:
             logger.warning("rule_cache_read_failed", error=str(exc))
         return await self._load_rules_from_store(tenant_id)
@@ -496,13 +532,13 @@ class RuleEngine:
             except asyncio.CancelledError:
                 if pubsub is not None:
                     with contextlib.suppress(Exception):
-                        await pubsub.aclose()
+                        await pubsub.aclose()  # type: ignore[no-untyped-call]
                 raise
             except Exception as exc:
                 logger.warning("rules_reload_listener_retry", error=str(exc))
                 if pubsub is not None:
                     with contextlib.suppress(Exception):
-                        await pubsub.aclose()
+                        await pubsub.aclose()  # type: ignore[no-untyped-call]
                 await asyncio.sleep(5)
 
 
