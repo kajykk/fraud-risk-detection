@@ -40,7 +40,7 @@ class ShapTask(Task): # type: ignore[misc]
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="shap.compute",
     bind=True,
     base=ShapTask,
@@ -140,7 +140,7 @@ def compute_shap(
         raise self.retry(exc=exc, countdown=10 * (self.request.retries + 1)) from exc
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="shap.cache_cleanup",
     bind=True,
     base=ShapTask,

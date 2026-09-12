@@ -137,7 +137,7 @@ def validate_webhook_url(url: str) -> str:
         if not resolved:
             raise ValueError(f"webhook url host not resolvable: {host}")
         for ip_str in resolved:
-            if _is_private_ip(ip_str.split("%")[0]):
+            if _is_private_ip(str(ip_str).split("%")[0]):
                 raise ValueError(f"webhook url resolves to private address: {ip_str}")
 
     return parsed.geturl()

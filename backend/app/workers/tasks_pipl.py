@@ -136,7 +136,7 @@ class PiplTask(Task): # type: ignore[misc]
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="pipl.export_data",
     bind=True,
     base=PiplTask,
@@ -300,7 +300,7 @@ def export_data(
     }
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="pipl.delete_data",
     bind=True,
     base=PiplTask,
@@ -488,7 +488,7 @@ def delete_data(
     }
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="pipl.rectify_data",
     bind=True,
     base=PiplTask,
@@ -571,7 +571,7 @@ def rectify_data(
     }
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="pipl.notify_subject",
     bind=True,
     base=PiplTask,

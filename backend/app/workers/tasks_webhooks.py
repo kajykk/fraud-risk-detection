@@ -45,7 +45,7 @@ class WebhookTask(Task): # type: ignore[misc]
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="webhook.deliver",
     bind=True,
     base=WebhookTask,

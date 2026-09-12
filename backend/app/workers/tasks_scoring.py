@@ -39,7 +39,7 @@ class LoggedTask(Task): # type: ignore[misc]
         return super().__call__(*args, **kwargs)
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="scoring.score_async",
     bind=True,
     base=LoggedTask,
@@ -109,7 +109,7 @@ def score_async(
         raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1)) from exc
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="scoring.persist_score",
     bind=True,
     base=LoggedTask,
@@ -159,7 +159,7 @@ def persist_score(
     return {"status": "PERSISTED", "transaction_id": transaction_id}
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="scoring.persist_transaction",
     bind=True,
     base=LoggedTask,
@@ -224,7 +224,7 @@ def persist_transaction(
     return {"status": "PERSISTED", "external_tx_id": transaction_data.get("external_tx_id")}
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="scoring.generate_case",
     bind=True,
     base=LoggedTask,
@@ -399,7 +399,7 @@ async def _notify_case_created_async(tenant_id: str, payload: dict[str, Any]) ->
             logger.warning("celery_send_task_failed", task="webhook.deliver", error=str(exc))
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="scoring.drift_check",
     bind=True,
     base=LoggedTask,
@@ -532,7 +532,7 @@ def drift_check(self: LoggedTask) -> dict[str, Any]:
     return {"status": "COMPLETED", **alert_counts}
 
 
-@celery_app.task( # type: ignore[misc]
+@celery_app.task(  # type: ignore[untyped-decorator]
     name="scoring.psi_report",
     bind=True,
     base=LoggedTask,
