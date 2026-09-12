@@ -100,8 +100,8 @@ class GraphSAGE:
         if self._model is None:
             self.build()
         state = torch.load(path, map_location=self._device, weights_only=True)
-        self._model.load_state_dict(state)  # type: ignore[union-attr]
-        self._model.eval()  # type: ignore[union-attr]
+        self._model.load_state_dict(state)
+        self._model.eval()
         self._loaded = True
         logger.info("graphsage.loaded", path=path)
         return self._model

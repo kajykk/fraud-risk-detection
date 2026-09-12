@@ -130,7 +130,7 @@ def train(
     train_edges = train_edge_index.to(device)
     val_edges = edge_index_all[:, val_idx].to(device)
 
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.Adam(  # type: ignore[attr-defined]
         model.parameters(), lr=learning_rate, weight_decay=5e-4
     )
     criterion = torch.nn.BCEWithLogitsLoss()
