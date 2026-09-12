@@ -99,7 +99,7 @@ jobs:
 
       # ---------- 第三步：扫描通过后才登录并推送 ----------
       - name: Login to Aliyun ACR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.ALIYUN_ACR_USERNAME }}
