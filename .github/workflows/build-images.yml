@@ -62,7 +62,7 @@ jobs:
 
       # ---------- 第一步：仅构建本地镜像（不推送） ----------
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build image locally (no push)
         id: build
