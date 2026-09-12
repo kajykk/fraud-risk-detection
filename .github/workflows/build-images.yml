@@ -48,7 +48,7 @@ jobs:
             context: ./gnn
             dockerfile: ./gnn/Dockerfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Parse version from tag
         id: meta
