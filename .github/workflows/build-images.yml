@@ -80,7 +80,7 @@ jobs:
 
       # ---------- 第二步：漏洞扫描本地镜像（HIGH/CRITICAL 失败即中止） ----------
       - name: Trivy vulnerability scan (local image, gate before push)
-        uses: aquasecurity/trivy-action@0.20.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.meta.outputs.local_image }}
           severity: HIGH,CRITICAL
